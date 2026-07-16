@@ -8,9 +8,15 @@ It checks configured public endpoints, reads Docker task state through a narrowl
 
 Set `STATUS_TARGETS_JSON` in the deployment `.env` to an array of objects with `id`, `name`, `group`, and `url`. A response below HTTP 500 is considered reachable; a target can specify `acceptedStatuses` when it needs stricter checks.
 
-## AI usage
+## OpenAI organization usage
 
-`AI_USAGE_SOURCES_JSON` supports OpenAI organization usage collection. It requires an organization admin key and is intentionally optional: service health continues to work without billing credentials. Do not put keys in client-side code or commit `.env`.
+The server reads `OPENAI_ADMIN_KEY` from the deployment `.env`. Use a dedicated Admin key restricted to the `Usage` read permission. The key is excluded from Git and the Docker build context, is never returned by the API, and is never embedded in browser JavaScript.
+
+The collector runs hourly and re-fetches 48 hourly buckets. Results are upserted into `/data/usage.sqlite` by bucket, project, API key, model, and service tier, so delayed usage replaces the earlier snapshot instead of being counted twice. Costs are collected from the separate organization costs endpoint.
+
+The interface labels the quota view `預估免費池使用量` because the Usage API reports observed tokens, not an official remaining-free-token field. Pool limits, eligible model patterns, project labels, and key-to-service labels are deployment settings. Models outside both configured pools are marked as possible billing traffic.
+
+Set `DISCORD_WEBHOOK_URL` to enable deduplicated alerts at 70%, 85%, and 95% for each pool. No webhook means the dashboard still shows the thresholds without sending messages.
 
 ## Deployment
 
