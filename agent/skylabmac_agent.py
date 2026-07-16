@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report selected SkyLabMac process states to the private status dashboard."""
+"""Report selected SkyLabMac service states to the public status dashboard."""
 
 import json
 import os
@@ -8,21 +8,65 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
 
 CONFIG_PATH = os.path.expanduser("~/.config/sky-status-agent.json")
+BAMBOO_CRON_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/cron/jobs.json")
+BAMBOO_WATCHER_STATE_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/state/discord-watcher/state.json")
+WATCHER_MAX_AGE_SECONDS = 20 * 60
 WATCHES = [
-    ("caddy", "Caddy", "/usr/local/sbin/caddy run"),
-    ("localplaud-api", "LocalPlaud API", "localplaud serve"),
-    ("localplaud-worker", "LocalPlaud worker", "localplaud run"),
-    ("bamboo-gateway", "Bamboo gateway", "hermes_cli.main --profile bamboo gateway run"),
-    ("bamboo-discord", "Bamboo Discord watcher", "discord_channel_watcher.py"),
-    ("token-tracker", "TokenTrackerBar", "tracker.js serve --port 7680"),
-    ("nycu-haix-runner", "NYCU-HAIX runner", "actions.runner.nycu-haix-omniobserve.sky-mac-mini"),
+    ("process", "caddy", "Caddy", "/usr/local/sbin/caddy run"),
+    ("process", "localplaud-api", "LocalPlaud API", "localplaud serve"),
+    ("process", "localplaud-worker", "LocalPlaud worker", "localplaud run"),
+    ("process", "bamboo-gateway", "Bamboo gateway", "hermes_cli.main --profile bamboo gateway run"),
+    ("cron", "bamboo-discord", "Bamboo Discord watcher", None),
+    ("process", "token-tracker", "TokenTrackerBar", "tracker.js serve --port 7680"),
+    ("process", "nycu-haix-runner", "NYCU-HAIX runner", "actions.runner.nycu-haix-omniobserve.sky-mac-mini"),
 ]
 
 
 def command_output(command):
     return subprocess.run(command, text=True, capture_output=True, check=False).stdout
+
+
+def bamboo_discord_status(cron_path=BAMBOO_CRON_PATH, state_path=BAMBOO_WATCHER_STATE_PATH, now=None):
+    now = now or datetime.now(timezone.utc)
+    try:
+        jobs = json.loads(cron_path.read_text(encoding="utf-8")).get("jobs", [])
+        job = next((entry for entry in jobs if entry.get("script") == "discord_channel_watcher.py"), None)
+    except (OSError, json.JSONDecodeError):
+        job = None
+    if not job:
+        return {"id": "bamboo-discord", "name": "Bamboo Discord watcher", "kind": "Hermes cron", "up": False, "detail": "Cron job not found"}
+
+    try:
+        last_run = datetime.fromisoformat(str(job.get("last_run_at", "")).replace("Z", "+00:00"))
+        if last_run.tzinfo is None:
+            last_run = last_run.replace(tzinfo=timezone.utc)
+        run_age = max(0, (now - last_run.astimezone(timezone.utc)).total_seconds())
+    except (TypeError, ValueError):
+        run_age = float("inf")
+    try:
+        state_age = max(0, now.timestamp() - state_path.stat().st_mtime)
+    except OSError:
+        state_age = float("inf")
+
+    enabled = job.get("enabled") is True and job.get("state") == "scheduled"
+    successful = job.get("last_status") == "ok" and not job.get("last_error")
+    fresh = run_age <= WATCHER_MAX_AGE_SECONDS and state_age <= WATCHER_MAX_AGE_SECONDS
+    healthy = enabled and successful and fresh
+    if not enabled:
+        detail = "Cron job disabled or unscheduled"
+    elif not successful:
+        detail = f"Last run failed: {job.get('last_error') or job.get('last_status') or 'unknown'}"
+    elif run_age > WATCHER_MAX_AGE_SECONDS:
+        detail = f"Cron stale · last run {int(run_age // 60)}m ago"
+    elif state_age > WATCHER_MAX_AGE_SECONDS:
+        detail = f"Watcher state stale · {int(state_age // 60)}m old"
+    else:
+        detail = f"Cron healthy · last run {int(run_age // 60)}m ago"
+    return {"id": "bamboo-discord", "name": "Bamboo Discord watcher", "kind": "Hermes cron", "up": healthy, "detail": detail}
 
 
 def main():
@@ -36,7 +80,10 @@ def main():
     processes = command_output(["ps", "-axo", "pid=,args="])
     launchd = command_output(["launchctl", "list"])
     items = []
-    for identifier, name, pattern in WATCHES:
+    for watch_type, identifier, name, pattern in WATCHES:
+        if watch_type == "cron":
+            items.append(bamboo_discord_status())
+            continue
         present = pattern in processes or pattern in launchd
         detail = "Process detected" if pattern in processes else ("LaunchAgent loaded" if pattern in launchd else "Process not found")
         items.append({"id": identifier, "name": name, "kind": "Process", "up": present, "detail": detail})
