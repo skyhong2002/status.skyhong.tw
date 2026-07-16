@@ -16,7 +16,7 @@ const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
   { id: 'youtube-board-tw', name: 'youtube.board.tw', group: 'Products', url: 'https://youtube.board.tw', acceptedStatuses: [200, 301, 302, 307, 308, 403] },
   { id: 'harmonica-observe', name: 'harmonica.observe.tw', group: 'Products', url: 'https://harmonica.observe.tw' },
   { id: 'youtube-observe', name: 'youtube.observe.tw', group: 'Products', url: 'https://youtube.observe.tw' },
-  { id: 'plaud-skyhong', name: 'plaud.skyhong.tw', group: 'Products', url: 'https://plaud.skyhong.tw' },
+  { id: 'plaud-skyhong', name: 'plaud.observe.tw', group: 'Products', url: 'https://plaud.observe.tw', acceptedStatuses: [200, 301, 302, 307, 308, 401] },
   { id: 'mayor2026-observe', name: 'mayor2026.observe.tw', group: 'Products', url: 'https://mayor2026.observe.tw' },
   { id: 'infovore', name: 'Infovore', group: 'Products', url: 'https://infovore.skyhong.tw' },
   { id: 'n8n', name: 'n8n automations', group: 'Operations', url: 'https://n8n.skyhong.tw' },
