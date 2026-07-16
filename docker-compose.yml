@@ -1,0 +1,53 @@
+services:
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.1.1
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      INFO: 1
+      SERVICES: 1
+      TASKS: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - internal
+
+  status-dashboard:
+    build: .
+    image: status-skyhong-tw:latest
+    restart: unless-stopped
+    depends_on:
+      - docker-proxy
+    environment:
+      DASHBOARD_USER: ${DASHBOARD_USER:?set in .env}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?set in .env}
+      DOCKER_API_URL: http://docker-proxy:2375
+      CHECK_INTERVAL_SECONDS: 60
+      STATUS_TARGETS_JSON: ${STATUS_TARGETS_JSON}
+      AI_USAGE_SOURCES_JSON: ${AI_USAGE_SOURCES_JSON:-[]}
+    volumes:
+      - status-data:/data
+    networks:
+      - internal
+      - dokploy-network
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.sky-status-http.rule=Host(`status.skyhong.tw`)
+      - traefik.http.routers.sky-status-http.entrypoints=web
+      - traefik.http.routers.sky-status-http.middlewares=redirect-to-https@file
+      - traefik.http.routers.sky-status.rule=Host(`status.skyhong.tw`)
+      - traefik.http.routers.sky-status.entrypoints=websecure
+      - traefik.http.routers.sky-status.tls=true
+      - traefik.http.routers.sky-status.tls.certresolver=letsencrypt
+      - traefik.http.services.sky-status.loadbalancer.server.port=3000
+
+networks:
+  internal:
+    internal: true
+  dokploy-network:
+    external: true
+
+volumes:
+  status-data:
