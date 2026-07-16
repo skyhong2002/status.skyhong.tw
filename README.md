@@ -15,3 +15,7 @@ Set `STATUS_TARGETS_JSON` in the deployment `.env` to an array of objects with `
 ## Deployment
 
 The Compose stack joins `dokploy-network` and uses Dokploy's existing Traefik middleware and Let's Encrypt resolver. It runs in `/home/ubuntu/apps/sky-status-dashboard` on the host.
+
+## SkyLabMac agent
+
+`agent/skylabmac_agent.py` is a standard-library-only LaunchAgent. It sends a signed summary of selected macOS processes to the dashboard once a minute. Its token is stored only in `~/.config/sky-status-agent.json` with mode `600`; it does not open any listening port on SkyLabMac.
