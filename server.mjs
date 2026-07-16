@@ -12,6 +12,7 @@ const dockerApiUrl = process.env.DOCKER_API_URL || '';
 const maxHistoryPoints = 24 * 60;
 
 const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
+  { id: 'skyhong-tw', name: 'skyhong.tw', group: 'Products', url: 'https://skyhong.tw' },
   { id: 'youtube-board-tw', name: 'youtube.board.tw', group: 'Products', url: 'https://youtube.board.tw', acceptedStatuses: [200, 301, 302, 307, 308, 403] },
   { id: 'harmonica-observe', name: 'harmonica.observe.tw', group: 'Products', url: 'https://harmonica.observe.tw' },
   { id: 'youtube-observe', name: 'youtube.observe.tw', group: 'Products', url: 'https://youtube.observe.tw' },
