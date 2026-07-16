@@ -16,6 +16,7 @@ services:
   status-dashboard:
     build: .
     image: status-skyhong-tw:latest
+    user: "0:0"
     restart: unless-stopped
     depends_on:
       - docker-proxy
