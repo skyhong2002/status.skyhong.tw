@@ -6,7 +6,7 @@ It checks configured public endpoints, reads Docker task state through a narrowl
 
 ## Add a product
 
-Set `STATUS_TARGETS_JSON` in the deployment `.env` to an array of objects with `id`, `name`, `group`, and `url`. A response below HTTP 500 is considered reachable; a target can specify `acceptedStatuses` when it needs stricter checks.
+Set `STATUS_TARGETS_JSON` in the deployment `.env` to an array of objects with `id`, `name`, `group`, and `url`. HTTP 2xx and 3xx responses are healthy by default. A target can set `acceptedStatuses` for an expected authentication or edge-protection response such as Cloudflare's 403 challenge.
 
 ## OpenAI organization usage
 
