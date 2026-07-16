@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0b0e10">
+    <meta name="description" content="Live service, infrastructure, and OpenAI usage status for Sky Hong's projects.">
+    <title>Sky Status</title>
+    <link rel="icon" href="/status-mark.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="/" aria-label="Sky Status home">
+          <img src="/status-mark.svg" alt="" width="36" height="36">
+          <span><strong>Sky Status</strong><small>status.skyhong.tw</small></span>
+        </a>
+        <nav aria-label="Dashboard sections">
+          <a href="#products">Products</a>
+          <a href="#infrastructure">Infrastructure</a>
+          <a href="#ai-usage">AI usage</a>
+        </nav>
+        <div class="last-check" id="last-check">Loading status...</div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="global-state" id="global-state" aria-live="polite">
+        <div class="state-copy">
+          <span class="state-indicator" aria-hidden="true"></span>
+          <div><strong id="global-title">Checking all systems</strong><span id="global-detail">Fetching current service state.</span></div>
+        </div>
+        <span class="state-time" id="state-time"></span>
+      </section>
+
+      <section class="summary-strip" aria-label="Status summary">
+        <div><span>Public endpoints</span><strong id="summary-public">-</strong></div>
+        <div><span>Docker runtime</span><strong id="summary-docker">-</strong></div>
+        <div><span>SkyLabMac</span><strong id="summary-remote">-</strong></div>
+        <div><span>AI requests today</span><strong id="summary-ai">-</strong></div>
+      </section>
+
+      <section class="dashboard-section" id="attention-section" hidden>
+        <div class="section-heading"><div><span class="eyebrow">Active incidents</span><h2>Needs attention</h2></div><span class="section-meta" id="attention-count"></span></div>
+        <div class="incident-list" id="attention"></div>
+      </section>
+
+      <section class="dashboard-section" id="products">
+        <div class="section-heading">
+          <div><span class="eyebrow">External probes</span><h2>Products and services</h2></div>
+          <div class="legend"><span><i class="legend-up"></i>Operational</span><span><i class="legend-down"></i>Unavailable</span><span><i class="legend-empty"></i>No data</span></div>
+        </div>
+        <div class="monitor-group" id="product-list"></div>
+      </section>
+
+      <section class="dashboard-section" id="infrastructure">
+        <div class="section-heading"><div><span class="eyebrow">Runtime state</span><h2>Infrastructure</h2></div><span class="section-meta">Read-only agents</span></div>
+        <div class="infrastructure-grid">
+          <article class="runtime-panel">
+            <div class="panel-heading"><div><span class="panel-kicker">skyhong.tw</span><h3>Docker services</h3></div><strong id="docker-total">-</strong></div>
+            <div class="runtime-list" id="docker-list"></div>
+          </article>
+          <article class="runtime-panel">
+            <div class="panel-heading"><div><span class="panel-kicker">Remote host</span><h3>SkyLabMac processes</h3></div><strong id="remote-total">-</strong></div>
+            <div class="runtime-list" id="remote-list"></div>
+          </article>
+        </div>
+      </section>
+
+      <section class="dashboard-section" id="ai-usage">
+        <div class="section-heading"><div><span class="eyebrow">Organization telemetry</span><h2>OpenAI usage</h2></div><span class="section-meta" id="ai-sync">Not connected</span></div>
+        <div class="ai-panel" id="ai-panel"></div>
+      </section>
+    </main>
+
+    <footer class="shell site-footer">
+      <span>Checks refresh every minute. OpenAI usage syncs hourly.</span>
+      <a href="https://github.com/skyhong2002/status.skyhong.tw">Source and notices</a>
+    </footer>
+  </body>
+</html>

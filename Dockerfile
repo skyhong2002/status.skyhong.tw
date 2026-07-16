@@ -5,6 +5,7 @@ COPY package.json ./
 COPY server.mjs ./
 COPY usage.mjs ./
 COPY agent ./agent
+COPY public ./public
 
 ENV NODE_ENV=production
 ENV PORT=3000
