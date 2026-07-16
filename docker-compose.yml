@@ -21,8 +21,6 @@ services:
     depends_on:
       - docker-proxy
     environment:
-      DASHBOARD_USER: ${DASHBOARD_USER:?set in .env}
-      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?set in .env}
       DOCKER_API_URL: http://docker-proxy:2375
       CHECK_INTERVAL_SECONDS: 60
       STATUS_TARGETS_JSON: ${STATUS_TARGETS_JSON}

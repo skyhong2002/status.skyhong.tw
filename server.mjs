@@ -133,15 +133,6 @@ async function refresh() {
   await saveHistory();
 }
 
-function authorized(request) {
-  const user = process.env.DASHBOARD_USER;
-  const password = process.env.DASHBOARD_PASSWORD;
-  if (!user || !password) return true;
-  const header = request.headers.authorization || '';
-  const token = header.startsWith('Basic ') ? Buffer.from(header.slice(6), 'base64').toString('utf8') : '';
-  return token === `${user}:${password}`;
-}
-
 function agentAuthorized(request) {
   const token = process.env.AGENT_INGEST_TOKEN;
   return Boolean(token) && request.headers.authorization === `Bearer ${token}`;
@@ -222,11 +213,6 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
   const agentMatch = url.pathname.match(/^\/api\/agents\/([a-z0-9-]{1,64})$/i);
   if (request.method === 'POST' && agentMatch) return ingestAgent(request, response, agentMatch[1]);
-  if (!authorized(request)) {
-    response.writeHead(401, { 'www-authenticate': 'Basic realm="Sky Status"' });
-    response.end('Authentication required');
-    return;
-  }
   if (url.pathname === '/api/status') return json(response, state);
   if (url.pathname === '/healthz') return json(response, { ok: true });
   response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });

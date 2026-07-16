@@ -1,8 +1,8 @@
 # status.skyhong.tw
 
-A private operations dashboard for services hosted on `skyhong.tw`.
+A public operations dashboard for services hosted on `skyhong.tw`.
 
-It checks configured public endpoints, reads Docker task state through a narrowly scoped read-only socket proxy, and retains a rolling 24-hour availability history. The dashboard is protected with HTTP Basic Auth and never exposes credentials or API keys to the browser.
+It checks configured public endpoints, reads Docker task state through a narrowly scoped read-only socket proxy, and retains a rolling 24-hour availability history. The dashboard is intentionally public, while credentials and API keys remain server-side and are never returned to the browser.
 
 ## Add a product
 
