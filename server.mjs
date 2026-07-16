@@ -64,9 +64,10 @@ async function getDockerServices() {
   ]);
   const swarm = (services || []).map((service) => {
     const relevantTasks = (tasks || []).filter((task) => task.ServiceID === service.ID);
+    const activeTasks = relevantTasks.filter((task) => task.DesiredState === 'running');
     const desired = service.Spec?.Mode?.Replicated?.Replicas ?? 1;
-    const running = relevantTasks.filter((task) => task.Status?.State === 'running').length;
-    const failed = relevantTasks.filter((task) => ['failed', 'rejected'].includes(task.Status?.State)).length;
+    const running = activeTasks.filter((task) => task.Status?.State === 'running').length;
+    const failed = activeTasks.filter((task) => ['failed', 'rejected'].includes(task.Status?.State)).length;
     return {
       id: service.ID,
       name: service.Spec?.Name || service.ID.slice(0, 12),
