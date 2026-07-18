@@ -25,6 +25,17 @@ function matchesModel(model, patterns) {
   });
 }
 
+function poolForUsage(model, serviceTier, highModels, miniModels) {
+  const normalizedTier = String(serviceTier || '').toLowerCase();
+  if (normalizedTier) {
+    if (!normalizedTier.includes('incentivized')) return 'billable';
+    return matchesModel(model, miniModels) ? 'mini' : 'high';
+  }
+  if (matchesModel(model, miniModels)) return 'mini';
+  if (matchesModel(model, highModels)) return 'high';
+  return 'billable';
+}
+
 function zonedDayStart(date, timeZone) {
   const wanted = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
     timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -115,10 +126,8 @@ export async function createUsageMonitor(options = {}) {
   let lastSyncAt = null;
   let lastError = null;
 
-  function poolFor(model) {
-    if (matchesModel(model, miniModels)) return 'mini';
-    if (matchesModel(model, highModels)) return 'high';
-    return 'billable';
+  function poolFor(model, serviceTier) {
+    return poolForUsage(model, serviceTier, highModels, miniModels);
   }
 
   function summary() {
@@ -127,8 +136,9 @@ export async function createUsageMonitor(options = {}) {
       COALESCE(SUM(requests),0) requests FROM usage_snapshots WHERE bucket_start >= ?`).get(today);
     const utcDay = Math.floor(Date.now() / 86_400_000) * 86_400;
     const cost = db.prepare('SELECT COALESCE(SUM(amount),0) amount, COALESCE(MAX(currency),\'usd\') currency FROM cost_snapshots WHERE bucket_start >= ?').get(utcDay);
-    const byModel = db.prepare(`SELECT model, SUM(input_tokens) input, SUM(output_tokens) output, SUM(requests) requests
-      FROM usage_snapshots WHERE bucket_start >= ? GROUP BY model ORDER BY input + output DESC`).all(today).map((row) => ({ ...row, pool: poolFor(row.model), tokens: row.input + row.output }));
+    const byModel = db.prepare(`SELECT model, service_tier serviceTier, SUM(input_tokens) input, SUM(output_tokens) output, SUM(requests) requests
+      FROM usage_snapshots WHERE bucket_start >= ? GROUP BY model, service_tier ORDER BY input + output DESC`).all(today)
+      .map((row) => ({ ...row, pool: poolFor(row.model, row.serviceTier), tokens: row.input + row.output }));
     const usedKeys = db.prepare(`SELECT api_key_id id, SUM(input_tokens) input, SUM(output_tokens) output, SUM(requests) requests
       FROM usage_snapshots WHERE bucket_start >= ? GROUP BY api_key_id ORDER BY input + output DESC`).all(today).map((row) => ({ ...row, name: keyLabels[row.id] || shortId(row.id, 'key'), tokens: row.input + row.output }));
     const byKey = [...usedKeys, ...Object.entries(keyLabels).filter(([id]) => !usedKeys.some((row) => row.id === id)).map(([id, name]) => ({ id, name, input: 0, output: 0, requests: 0, tokens: 0 }))];
@@ -209,4 +219,4 @@ export async function createUsageMonitor(options = {}) {
   return { sync, summary };
 }
 
-export { jsonEnv, matchesModel, zonedDayStart };
+export { jsonEnv, matchesModel, poolForUsage, zonedDayStart };

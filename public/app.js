@@ -63,7 +63,6 @@ function renderAttention(data, remote, ai) {
     ...data.services.filter((item) => !item.up),
     ...remote.filter((item) => !item.up),
     ...(ai && !ai.connected ? [{ name: ai.name, detail: ai.detail }] : []),
-    ...(ai?.possibleBillable || []).map((item) => ({ name: item.model, detail: 'Outside the configured estimated free pools' })),
     ...(ai?.pools || []).filter((pool) => pool.percent >= 70).map((pool) => ({ name: pool.name, detail: `${pool.percent.toFixed(1)}% of estimated pool used` })),
   ];
   $('attention-section').hidden = issues.length === 0;

@@ -16,7 +16,7 @@ The server reads `OPENAI_ADMIN_KEY` from the deployment `.env`. Use a dedicated 
 
 The collector runs hourly and re-fetches 48 hourly buckets. Results are upserted into `/data/usage.sqlite` by bucket, project, API key, model, and service tier, so delayed usage replaces the earlier snapshot instead of being counted twice. Costs are collected from the separate organization costs endpoint.
 
-The interface labels the quota view `預估免費池使用量` because the Usage API reports observed tokens, not an official remaining-free-token field. Pool limits, eligible model patterns, project labels, and key-to-service labels are deployment settings. Models outside both configured pools are marked as possible billing traffic.
+The interface labels the quota view `預估免費池使用量` because the Usage API reports observed tokens, not an official remaining-free-token field. Usage reported with an incentivized service tier is assigned to the high or mini pool from its model family; a reported non-incentivized tier is treated as possible billing traffic. Eligible-model patterns remain a fallback for records without service-tier data. Pool limits, fallback model patterns, project labels, and key-to-service labels are deployment settings. Possible billing traffic is shown in the usage table but does not count as a service incident.
 
 Set `DISCORD_WEBHOOK_URL` to enable deduplicated alerts at 70%, 85%, and 95% for each pool. No webhook means the dashboard still shows the thresholds without sending messages.
 
