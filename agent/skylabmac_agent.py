@@ -17,9 +17,13 @@ CONFIG_PATH = os.path.expanduser("~/.config/sky-status-agent.json")
 BAMBOO_CRON_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/cron/jobs.json")
 BAMBOO_WATCHER_STATE_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/state/discord-watcher/state.json")
 WATCHER_MAX_AGE_SECONDS = 20 * 60
+API_PROBE_TIMEOUT_SECONDS = 5
 WATCHES = [
     ("process", "caddy", "Caddy", "/usr/local/sbin/caddy run"),
-    ("process", "localplaud-api", "LocalPlaud API", "localplaud serve"),
+    # The API is served by `localplaud run` (combined poll+serve) on this host, so a
+    # `localplaud serve` process grep never matches. Probe the health endpoint instead —
+    # that verifies the API is actually serving requests, not just that a process exists.
+    ("http", "localplaud-api", "LocalPlaud API", "http://127.0.0.1:8080/healthz"),
     ("process", "localplaud-worker", "LocalPlaud worker", "localplaud run"),
     ("process", "bamboo-gateway", "Bamboo gateway", "hermes_cli.main --profile bamboo gateway run"),
     ("cron", "bamboo-discord", "Bamboo Discord watcher", None),
@@ -67,6 +71,20 @@ def host_metrics(disk_warn=90, mem_warn=92):
     except (OSError, ValueError, ZeroDivisionError):
         pass
     return items
+
+
+def http_probe(url, timeout=API_PROBE_TIMEOUT_SECONDS):
+    """Check a local HTTP endpoint. Any HTTP response means the server is serving;
+    an auth challenge (401/403) still proves the process is up. Only connection
+    errors or timeouts count as down."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return True, f"Serving · HTTP {response.status}"
+    except urllib.error.HTTPError as error:
+        return True, f"Serving · HTTP {error.code}"
+    except (urllib.error.URLError, OSError) as error:
+        reason = getattr(error, "reason", error)
+        return False, f"Not serving · {reason}"
 
 
 def bamboo_discord_status(cron_path=BAMBOO_CRON_PATH, state_path=BAMBOO_WATCHER_STATE_PATH, now=None):
@@ -122,6 +140,10 @@ def main():
     for watch_type, identifier, name, pattern in WATCHES:
         if watch_type == "cron":
             items.append(bamboo_discord_status())
+            continue
+        if watch_type == "http":
+            up, detail = http_probe(pattern)
+            items.append({"id": identifier, "name": name, "kind": "HTTP endpoint", "up": up, "detail": detail})
             continue
         present = pattern in processes or pattern in launchd
         detail = "Process detected" if pattern in processes else ("LaunchAgent loaded" if pattern in launchd else "Process not found")
