@@ -16,7 +16,7 @@ DISK_WARN="${DISK_WARN_PERCENT:-90}"
 MEM_WARN="${MEM_WARN_PERCENT:-92}"
 
 read -r disk_pct disk_used disk_total < <(df -Ph / | awk 'NR==2{gsub("%","",$5); print $5, $3, $2}')
-read -r mem_pct mem_used mem_total < <(free -m | awk '/Mem:/{printf "%d %d %d", $3*100/$2, $3, $2}')
+read -r mem_pct mem_used mem_total < <(free -m | awk '/Mem:/{printf "%d %d %d\n", $3*100/$2, $3, $2}')
 load1=$(awk '{print $1}' /proc/loadavg)
 cores=$(nproc)
 
