@@ -20,7 +20,7 @@ Every HTTPS target's TLS certificate is inspected on a schedule (`CERT_CHECK_INT
 
 The server reads `OPENAI_ADMIN_KEY` from the deployment `.env`. Use a dedicated Admin key restricted to the `Usage` read permission. The key is excluded from Git and the Docker build context, is never returned by the API, and is never embedded in browser JavaScript.
 
-The collector runs hourly and re-fetches 48 hourly buckets. Results are upserted into `/data/usage.sqlite` by bucket, project, API key, model, and service tier, so delayed usage replaces the earlier snapshot instead of being counted twice. Costs are collected from the separate organization costs endpoint.
+The collector runs every 10 minutes (`OPENAI_SYNC_INTERVAL_MINUTES`) and re-fetches 48 hourly buckets. Results are upserted into `/data/usage.sqlite` by bucket, project, API key, model, and service tier, so delayed usage replaces the earlier snapshot instead of being counted twice. Costs are collected from the separate organization costs endpoint.
 
 The interface labels the quota view `預估免費池使用量` because the Usage API reports observed tokens, not an official remaining-free-token field. Usage reported with an incentivized service tier is assigned to the high or mini pool from its model family; a reported non-incentivized tier is treated as possible billing traffic. Eligible-model patterns remain a fallback for records without service-tier data. Pool limits, fallback model patterns, project labels, and key-to-service labels are deployment settings. Possible billing traffic is shown in the usage table but does not count as a service incident.
 

@@ -20,6 +20,7 @@ const domainWarnDays = Number(process.env.DOMAIN_WARN_DAYS || 30);
 const certIntervalMs = Math.max(1, Number(process.env.CERT_CHECK_INTERVAL_HOURS || 6)) * 3600 * 1000;
 const heartbeatToken = process.env.HEARTBEAT_TOKEN || process.env.AGENT_INGEST_TOKEN || '';
 const externalHeartbeatUrl = process.env.EXTERNAL_HEARTBEAT_URL || '';
+const usageSyncIntervalMs = Math.max(1, Number(process.env.OPENAI_SYNC_INTERVAL_MINUTES || 10)) * 60 * 1000;
 const maintenanceWindows = parseJson(process.env.MAINTENANCE_JSON, []);
 const publicOrigin = process.env.PUBLIC_ORIGIN || 'https://status.skyhong.tw';
 const maxHistoryPoints = 24 * 60;
@@ -384,7 +385,7 @@ await refresh();
 refreshCertificates().catch(() => {});
 setInterval(() => refreshCertificates().catch(() => {}), certIntervalMs);
 setInterval(() => refresh().catch(() => {}), intervalMs);
-if (usageMonitor) setInterval(() => usageMonitor.sync().catch(() => {}), 60 * 60 * 1000);
+if (usageMonitor) setInterval(() => usageMonitor.sync().catch(() => {}), usageSyncIntervalMs);
 server.listen(port, '0.0.0.0');
 
 export { checkTarget, parseJson, refreshCertificates };
