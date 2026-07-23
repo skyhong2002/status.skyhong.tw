@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createAlerter } from './alerts.mjs';
 import { createUsageMonitor } from './usage.mjs';
 
 const port = Number(process.env.PORT || 3000);
@@ -24,6 +25,7 @@ const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
 ]);
 const state = { checkedAt: null, targets: [], services: [], agents: {}, aiUsage: [], errors: [], history: {} };
 const usageMonitor = await createUsageMonitor({ dataDir });
+const alerter = await createAlerter({ dataDir });
 const publicAssets = new Map(await Promise.all([
   ['/', 'index.html', 'text/html; charset=utf-8', 'no-store'],
   ['/styles.css', 'styles.css', 'text/css; charset=utf-8', 'public, max-age=3600'],
@@ -139,6 +141,13 @@ async function refresh() {
   state.aiUsage = aiUsage;
   state.errors = errors;
   recordHistory([...checkedTargets, ...services]);
+  const alertItems = [
+    ...checkedTargets.map((t) => ({ id: `target:${t.id}`, name: t.name, up: t.up, detail: t.statusCode ? `HTTP ${t.statusCode} · ${t.detail}` : t.detail })),
+    ...services.map((s) => ({ id: `runtime:${s.name}`, name: s.name, up: s.up, detail: s.detail })),
+    ...remoteItems().map((r) => ({ id: `remote:${r.id}`, name: r.name, up: r.up, detail: r.detail })),
+  ];
+  if (aiUsage[0]) alertItems.push({ id: 'openai-sync', name: 'OpenAI usage collection', up: aiUsage[0].connected !== false, detail: aiUsage[0].detail || '' });
+  try { await alerter.evaluate(alertItems); } catch {}
   await saveHistory();
 }
 
