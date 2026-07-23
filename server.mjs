@@ -132,14 +132,26 @@ async function getDockerServices() {
       detail: `${running}/${desired} running${failed ? `, ${failed} failed` : ''}`,
     };
   });
-  const standalone = (containers || [])
+  const standalone = await Promise.all((containers || [])
     .filter((container) => !container.Labels?.['com.docker.swarm.service.name'])
-    .map((container) => ({
-      id: container.Id,
-      name: container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12),
-      kind: 'Container',
-      up: container.State === 'running' && !container.Status?.includes('(unhealthy)'),
-      detail: container.Status || container.State,
+    .map(async (container) => {
+      const name = container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12);
+      let restarts = 0;
+      let oomKilled = false;
+      let restarting = container.State === 'restarting';
+      try {
+        const inspect = await dockerRequest(`/containers/${container.Id}/json`);
+        restarts = inspect?.RestartCount ?? 0;
+        oomKilled = Boolean(inspect?.State?.OOMKilled);
+        restarting = Boolean(inspect?.State?.Restarting) || restarting;
+      } catch {}
+      const unhealthy = Boolean(container.Status?.includes('(unhealthy)'));
+      const up = container.State === 'running' && !unhealthy && !restarting && !oomKilled;
+      let detail = container.Status || container.State;
+      if (oomKilled) detail = `OOMKilled · ${detail}`;
+      else if (restarting) detail = `Restarting · ${detail}`;
+      if (restarts > 0) detail += ` · ${restarts} restarts`;
+      return { id: container.Id, name, kind: 'Container', up, detail };
     }));
   return [...swarm, ...standalone].sort((a, b) => a.name.localeCompare(b.name));
 }

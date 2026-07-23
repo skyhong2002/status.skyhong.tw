@@ -52,4 +52,8 @@ The Compose stack joins `dokploy-network` and uses Dokploy's existing Traefik mi
 
 ## SkyLabMac agent
 
-`agent/skylabmac_agent.py` is a standard-library-only LaunchAgent. It sends a signed summary of selected macOS processes to the dashboard once a minute. Its token is stored only in `~/.config/sky-status-agent.json` with mode `600`; it does not open any listening port on SkyLabMac.
+`agent/skylabmac_agent.py` is a standard-library-only LaunchAgent. It sends a summary of selected macOS processes to the dashboard once a minute, along with host metrics — root disk usage, load average, and memory pressure — each flagged when it crosses a threshold. Its token is stored only in `~/.config/sky-status-agent.json` with mode `600`; it does not open any listening port on SkyLabMac.
+
+`agent/vps_host_reporter.sh` does the same for the Linux VPS: run it once a minute from cron and it posts disk, memory, and load to the dashboard as the `vps` remote agent. It reads `AGENT_INGEST_TOKEN` from the environment or from the adjacent deployment `.env`.
+
+Standalone Docker containers are additionally inspected for restart count and OOM-kills, so a crash-looping or out-of-memory container is reported as down instead of appearing to run.

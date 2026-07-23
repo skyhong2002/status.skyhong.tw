@@ -3,6 +3,8 @@
 
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -28,6 +30,43 @@ WATCHES = [
 
 def command_output(command):
     return subprocess.run(command, text=True, capture_output=True, check=False).stdout
+
+
+def host_metrics(disk_warn=90, mem_warn=92):
+    """Best-effort macOS host metrics: disk, load average, and memory."""
+    items = []
+    try:
+        usage = shutil.disk_usage("/")
+        pct = round(usage.used / usage.total * 100)
+        items.append({"id": "disk-root", "name": "Disk /", "kind": "Host metric", "up": pct < disk_warn,
+                      "detail": f"{pct}% used · {usage.used / 1024**3:.0f}G/{usage.total / 1024**3:.0f}G"})
+    except OSError:
+        pass
+    try:
+        load1 = os.getloadavg()[0]
+        cores = os.cpu_count() or 1
+        items.append({"id": "load", "name": "Load average", "kind": "Host metric", "up": load1 < cores * 2,
+                      "detail": f"{load1:.2f} over {cores} cores"})
+    except (OSError, ValueError):
+        pass
+    try:
+        total = int(command_output(["sysctl", "-n", "hw.memsize"]).strip())
+        page_size = 4096
+        stats = {}
+        for line in command_output(["vm_stat"]).splitlines():
+            match = re.search(r"page size of (\d+)", line)
+            if match:
+                page_size = int(match.group(1))
+            key, sep, value = line.partition(":")
+            if sep and value.strip().rstrip(".").isdigit():
+                stats[key.strip()] = int(value.strip().rstrip("."))
+        available = (stats.get("Pages free", 0) + stats.get("Pages inactive", 0) + stats.get("Pages speculative", 0)) * page_size
+        pct = round((1 - available / total) * 100)
+        items.append({"id": "memory", "name": "Memory", "kind": "Host metric", "up": pct < mem_warn,
+                      "detail": f"{pct}% used · {(total - available) / 1024**3:.1f}G/{total / 1024**3:.1f}G"})
+    except (OSError, ValueError, ZeroDivisionError):
+        pass
+    return items
 
 
 def bamboo_discord_status(cron_path=BAMBOO_CRON_PATH, state_path=BAMBOO_WATCHER_STATE_PATH, now=None):
@@ -87,6 +126,8 @@ def main():
         present = pattern in processes or pattern in launchd
         detail = "Process detected" if pattern in processes else ("LaunchAgent loaded" if pattern in launchd else "Process not found")
         items.append({"id": identifier, "name": name, "kind": "Process", "up": present, "detail": detail})
+
+    items.extend(host_metrics())
 
     body = json.dumps({"host": socket.gethostname(), "items": items}).encode("utf-8")
     request = urllib.request.Request(
