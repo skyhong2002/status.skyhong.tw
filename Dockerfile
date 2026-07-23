@@ -3,6 +3,7 @@ FROM node:22-alpine
 WORKDIR /app
 COPY package.json ./
 COPY server.mjs ./
+COPY alerts.mjs ./
 COPY usage.mjs ./
 COPY agent ./agent
 COPY public ./public
