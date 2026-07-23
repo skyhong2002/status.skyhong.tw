@@ -76,6 +76,8 @@ h3 { font-size: 14px; }
 .status-label::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
 .status-label.down { color: var(--red); }
 .status-label.down::before { background: var(--red); }
+.status-label.degraded { color: var(--amber); }
+.status-label.degraded::before { background: var(--amber); }
 .monitor-metrics { min-width: 94px; text-align: right; font-variant-numeric: tabular-nums; }
 .monitor-metrics strong { display: block; font-size: 16px; }
 .monitor-metrics span { color: var(--muted); font-size: 10px; }
@@ -105,6 +107,11 @@ h3 { font-size: 14px; }
 .runtime-state { display: flex; align-items: center; gap: 6px; color: var(--green); font-size: 9px; font-weight: 750; text-transform: uppercase; }
 .runtime-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .runtime-state.down { color: var(--red); }
+.expiry-state { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--green); }
+.expiry-state.ok { color: var(--green); }
+.expiry-state.warn { color: var(--amber); }
+.expiry-state.down { color: var(--red); }
+.expiry-state.unknown { color: var(--faint); }
 
 .ai-stats { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid var(--border-soft); }
 .ai-stat { min-width: 0; padding: 17px 19px; border-right: 1px solid var(--border-soft); }

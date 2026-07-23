@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAlerter } from './alerts.mjs';
+import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from './probes.mjs';
 import { createUsageMonitor } from './usage.mjs';
 
 const port = Number(process.env.PORT || 3000);
@@ -10,6 +11,9 @@ const historyFile = join(dataDir, 'history.json');
 const agentsFile = join(dataDir, 'agents.json');
 const intervalMs = Math.max(15, Number(process.env.CHECK_INTERVAL_SECONDS || 60)) * 1000;
 const dockerApiUrl = process.env.DOCKER_API_URL || '';
+const certWarnDays = Number(process.env.CERT_WARN_DAYS || 21);
+const domainWarnDays = Number(process.env.DOMAIN_WARN_DAYS || 30);
+const certIntervalMs = Math.max(1, Number(process.env.CERT_CHECK_INTERVAL_HOURS || 6)) * 3600 * 1000;
 const maxHistoryPoints = 24 * 60;
 
 const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
@@ -23,7 +27,7 @@ const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
   { id: 'n8n', name: 'n8n automations', group: 'Operations', url: 'https://n8n.skyhong.tw' },
   { id: 'freshrss', name: 'FreshRSS', group: 'Operations', url: 'https://rss.skyhong.tw' },
 ]);
-const state = { checkedAt: null, targets: [], services: [], agents: {}, aiUsage: [], errors: [], history: {} };
+const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], agents: {}, aiUsage: [], errors: [], history: {}, thresholds: { certWarnDays, domainWarnDays } };
 const usageMonitor = await createUsageMonitor({ dataDir });
 const alerter = await createAlerter({ dataDir });
 const publicAssets = new Map(await Promise.all([
@@ -52,13 +56,50 @@ async function checkTarget(target) {
   try {
     const response = await fetch(target.url, { method: 'GET', redirect: 'follow', signal: controller.signal });
     const accepted = target.acceptedStatuses || [];
-    const up = accepted.length ? accepted.includes(response.status) : response.status >= 200 && response.status < 400;
-    return { ...target, up, statusCode: response.status, latencyMs: Date.now() - startedAt, detail: response.statusText || 'Reachable' };
+    let up = accepted.length ? accepted.includes(response.status) : response.status >= 200 && response.status < 400;
+    let detail = response.statusText || 'Reachable';
+    if (target.keyword || target.keywordAbsent) {
+      const body = await response.text();
+      const bodyCheck = evaluateBody(body, target);
+      if (!bodyCheck.ok) {
+        up = false;
+        detail = bodyCheck.reason;
+      }
+    }
+    const latencyMs = Date.now() - startedAt;
+    let degraded = false;
+    let degradedReason = null;
+    if (up && target.latencyThresholdMs != null && latencyMs > target.latencyThresholdMs) {
+      degraded = true;
+      degradedReason = `Slow: ${latencyMs}ms > ${target.latencyThresholdMs}ms`;
+    }
+    return { ...target, up, statusCode: response.status, latencyMs, detail, degraded, degradedReason };
   } catch (error) {
-    return { ...target, up: false, statusCode: null, latencyMs: Date.now() - startedAt, detail: error.name === 'AbortError' ? 'Timed out' : 'Unreachable' };
+    let detail = error.name === 'AbortError' ? 'Timed out' : 'Unreachable';
+    try {
+      const dnsResult = await resolveHost(new URL(target.url).hostname);
+      if (!dnsResult.ok) detail = 'DNS resolution failed';
+    } catch {}
+    return { ...target, up: false, statusCode: null, latencyMs: Date.now() - startedAt, detail, degraded: false, degradedReason: null };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function refreshCertificates() {
+  try {
+    const hostnames = [...new Set(targets
+      .map((target) => new URL(target.url))
+      .filter((url) => url.protocol === 'https:')
+      .map((url) => url.hostname))];
+    const registrableDomains = [...new Set(hostnames.map((hostname) => hostname.split('.').slice(-2).join('.')))];
+    const [certificates, domains] = await Promise.all([
+      Promise.all(hostnames.map(async (host) => ({ host, ...await checkCertificate(host) }))),
+      Promise.all(registrableDomains.map(async (domain) => ({ domain, ...await checkDomainExpiry(domain) }))),
+    ]);
+    state.certificates = certificates;
+    state.domains = domains;
+  } catch {}
 }
 
 async function dockerRequest(path) {
@@ -145,6 +186,9 @@ async function refresh() {
     ...checkedTargets.map((t) => ({ id: `target:${t.id}`, name: t.name, up: t.up, detail: t.statusCode ? `HTTP ${t.statusCode} · ${t.detail}` : t.detail })),
     ...services.map((s) => ({ id: `runtime:${s.name}`, name: s.name, up: s.up, detail: s.detail })),
     ...remoteItems().map((r) => ({ id: `remote:${r.id}`, name: r.name, up: r.up, detail: r.detail })),
+    // Only alert on a real, known expiry crossing the threshold — never on a check failure/timeout (avoids false incidents).
+    ...state.certificates.filter((c) => c.ok && c.daysRemaining != null).map((c) => ({ id: `cert:${c.host}`, name: `${c.host} · TLS certificate`, up: c.daysRemaining > certWarnDays, detail: `valid ${c.daysRemaining}d · ${c.issuer || 'cert'}` })),
+    ...state.domains.filter((d) => d.ok && d.daysRemaining != null).map((d) => ({ id: `domain:${d.domain}`, name: `${d.domain} · domain registration`, up: d.daysRemaining > domainWarnDays, detail: `expires in ${d.daysRemaining}d` })),
   ];
   if (aiUsage[0]) alertItems.push({ id: 'openai-sync', name: 'OpenAI usage collection', up: aiUsage[0].connected !== false, detail: aiUsage[0].detail || '' });
   try { await alerter.evaluate(alertItems); } catch {}
@@ -240,8 +284,10 @@ const server = createServer(async (request, response) => {
 await loadHistory();
 if (usageMonitor) await usageMonitor.sync();
 await refresh();
+await refreshCertificates();
+setInterval(() => refreshCertificates().catch(() => {}), certIntervalMs);
 setInterval(() => refresh().catch(() => {}), intervalMs);
 if (usageMonitor) setInterval(() => usageMonitor.sync().catch(() => {}), 60 * 60 * 1000);
 server.listen(port, '0.0.0.0');
 
-export { checkTarget, parseJson };
+export { checkTarget, parseJson, refreshCertificates };

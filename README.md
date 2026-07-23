@@ -10,6 +10,12 @@ The public interface uses a Kener-inspired status banner, monitor grouping, and 
 
 Set `STATUS_TARGETS_JSON` in the deployment `.env` to an array of objects with `id`, `name`, `group`, and `url`. HTTP 2xx and 3xx responses are healthy by default. A target can set `acceptedStatuses` for an expected authentication or edge-protection response such as Cloudflare's 403 challenge.
 
+A target can also assert on the response body and latency: `keyword` marks the check down unless the body contains that text, `keywordAbsent` marks it down if the body contains that text, and `latencyThresholdMs` marks the target *degraded* (still up, shown amber) when a response is slower than the threshold. A request that fails to connect is additionally probed with a DNS lookup so a resolution failure is reported distinctly from an unreachable host.
+
+## Certificate and domain expiry
+
+Every HTTPS target's TLS certificate is inspected on a schedule (`CERT_CHECK_INTERVAL_HOURS`, default 6) and its registrable domain's registration expiry is looked up — over RDAP for generic TLDs, and over WHOIS (`whois.twnic.net.tw`) for `.tw` domains, which are not served by RDAP. A certificate within `CERT_WARN_DAYS` (default 21) or a domain within `DOMAIN_WARN_DAYS` (default 30) of expiry is surfaced on the dashboard and sent as an incident alert. A failed or unsupported expiry lookup is shown as unknown and never raised as an incident, so a WHOIS timeout cannot produce a false alert.
+
 ## OpenAI organization usage
 
 The server reads `OPENAI_ADMIN_KEY` from the deployment `.env`. Use a dedicated Admin key restricted to the `Usage` read permission. The key is excluded from Git and the Docker build context, is never returned by the API, and is never embedded in browser JavaScript.

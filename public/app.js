@@ -31,19 +31,55 @@ function historyFor(id, history) {
   return { bars, uptime };
 }
 
+function statusLabel(target) {
+  if (!target.up) return { cls: 'down', text: 'Unavailable' };
+  if (target.degraded) return { cls: 'degraded', text: 'Degraded' };
+  return { cls: '', text: 'Operational' };
+}
+
 function renderProducts(data) {
   $('product-list').innerHTML = data.targets.map((target) => {
     const history = historyFor(target.id, data.history);
     const uptime = history.uptime === null ? 'No history' : `${history.uptime.toFixed(history.uptime === 100 ? 0 : 2)}% · 24h`;
+    const label = statusLabel(target);
+    const sub = target.degraded && target.degradedReason
+      ? esc(target.degradedReason)
+      : `${esc(target.group)} · ${target.statusCode ? `HTTP ${target.statusCode}` : esc(target.detail)}`;
     return `<article class="monitor-row">
       <div class="monitor-top">
-        <div class="monitor-name"><a href="${esc(target.url)}">${esc(target.name)}</a><span>${esc(target.group)} · ${target.statusCode ? `HTTP ${target.statusCode}` : esc(target.detail)}</span></div>
-        <span class="status-label ${target.up ? '' : 'down'}">${target.up ? 'Operational' : 'Unavailable'}</span>
+        <div class="monitor-name"><a href="${esc(target.url)}">${esc(target.name)}</a><span>${sub}</span></div>
+        <span class="status-label ${label.cls}">${label.text}</span>
         <div class="monitor-metrics"><strong>${number(target.latencyMs)} ms</strong><span>response time</span></div>
       </div>
       <div class="uptime-row"><div class="uptime-bars" aria-label="24 hour status history">${history.bars.map((status) => `<i class="${status}" title="${status}"></i>`).join('')}</div><span class="uptime-value">${uptime}</span></div>
     </article>`;
   }).join('');
+}
+
+function expiryRow(name, sub, days, known, warnDays) {
+  const danger = Math.ceil(warnDays / 3);
+  const level = !known ? 'unknown' : days <= danger ? 'down' : days <= warnDays ? 'warn' : 'ok';
+  const right = known ? `${number(days)}d` : 'n/a';
+  return `<div class="runtime-item"><div><strong>${esc(name)}</strong><span>${esc(sub)}</span></div><b class="expiry-state ${level}">${right}</b></div>`;
+}
+
+function renderCertificates(data) {
+  const certWarn = data.thresholds?.certWarnDays ?? 21;
+  const domainWarn = data.thresholds?.domainWarnDays ?? 30;
+  const certs = data.certificates || [];
+  const domains = data.domains || [];
+  $('cert-list').innerHTML = certs.length ? certs.map((c) => expiryRow(
+    c.host,
+    c.ok ? `${c.issuer || 'certificate'} · until ${c.validTo || ''}` : (c.error || 'check failed'),
+    c.daysRemaining, c.ok && c.daysRemaining != null, certWarn,
+  )).join('') : '<div class="empty">No certificate data yet.</div>';
+  $('domain-list').innerHTML = domains.length ? domains.map((d) => expiryRow(
+    d.domain,
+    d.ok ? `expires ${d.expiryDate || ''}` : (d.supported === false ? 'expiry not published' : (d.error || 'check failed')),
+    d.daysRemaining, d.ok && d.daysRemaining != null, domainWarn,
+  )).join('') : '<div class="empty">No domain data yet.</div>';
+  $('cert-total').textContent = `${certs.filter((c) => c.ok && c.daysRemaining != null && c.daysRemaining > certWarn).length}/${certs.length}`;
+  $('domain-total').textContent = `${domains.filter((d) => d.ok && d.daysRemaining != null && d.daysRemaining > domainWarn).length}/${domains.length}`;
 }
 
 function runtimeRow(item, remote = false) {
@@ -58,10 +94,15 @@ function renderInfrastructure(data, remote) {
 }
 
 function renderAttention(data, remote, ai) {
+  const certWarn = data.thresholds?.certWarnDays ?? 21;
+  const domainWarn = data.thresholds?.domainWarnDays ?? 30;
   const issues = [
     ...data.targets.filter((item) => !item.up).map((item) => ({ name: item.name, detail: item.statusCode ? `HTTP ${item.statusCode} · ${item.detail}` : item.detail })),
+    ...data.targets.filter((item) => item.up && item.degraded).map((item) => ({ name: item.name, detail: item.degradedReason || 'Degraded' })),
     ...data.services.filter((item) => !item.up),
     ...remote.filter((item) => !item.up),
+    ...(data.certificates || []).filter((c) => c.ok && c.daysRemaining != null && c.daysRemaining <= certWarn).map((c) => ({ name: `${c.host} · TLS certificate`, detail: `Expires in ${c.daysRemaining} days` })),
+    ...(data.domains || []).filter((d) => d.ok && d.daysRemaining != null && d.daysRemaining <= domainWarn).map((d) => ({ name: `${d.domain} · domain registration`, detail: `Expires in ${d.daysRemaining} days` })),
     ...(ai && !ai.connected ? [{ name: ai.name, detail: ai.detail }] : []),
     ...(ai?.pools || []).filter((pool) => pool.percent >= 70).map((pool) => ({ name: pool.name, detail: `${pool.percent.toFixed(1)}% of estimated pool used` })),
   ];
@@ -122,6 +163,7 @@ async function load() {
   const ai = data.aiUsage[0];
   renderProducts(data);
   renderInfrastructure(data, remote);
+  renderCertificates(data);
   renderAi(ai);
   const issues = renderAttention(data, remote, ai);
   renderGlobal(data, remote, ai, issues);
