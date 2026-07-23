@@ -34,6 +34,18 @@ An item must fail `ALERT_FAILURE_THRESHOLD` consecutive checks (default 2) befor
 
 These outage alerts are independent of the OpenAI free-pool threshold alerts, so the two can target different channels.
 
+## Heartbeats (dead-man's switch)
+
+Scheduled jobs — cron entries, n8n workflows, backups — report liveness by pinging the dashboard instead of being probed. Configure `HEARTBEATS_JSON` as an array of `{ id, name, periodSeconds, graceSeconds }` and have each job call `GET`/`POST` `/api/heartbeat/<id>` on its schedule, authenticated with `HEARTBEAT_TOKEN` (falls back to `AGENT_INGEST_TOKEN`) via `?token=` or an `Authorization: Bearer` header:
+
+```
+curl -fsS "https://status.skyhong.tw/api/heartbeat/nightly-backup?token=$HEARTBEAT_TOKEN"
+```
+
+If a ping does not arrive within `periodSeconds + graceSeconds`, the heartbeat is marked late, surfaced on the dashboard, and sent as an incident alert. This generalizes the bespoke Bamboo watcher freshness check to any job.
+
+Set `EXTERNAL_HEARTBEAT_URL` to have the dashboard ping an outside service (such as a Healthchecks.io check) after every successful refresh — so if the dashboard itself dies, that external service raises the alarm. This closes the "who watches the watcher" gap.
+
 ## Deployment
 
 The Compose stack joins `dokploy-network` and uses Dokploy's existing Traefik middleware and Let's Encrypt resolver. It runs in `/home/ubuntu/apps/sky-status-dashboard` on the host.

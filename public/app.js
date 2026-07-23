@@ -93,6 +93,14 @@ function renderInfrastructure(data, remote) {
   $('remote-total').textContent = `${remote.filter((item) => item.up).length}/${remote.length}`;
 }
 
+function renderJobs(data) {
+  const jobs = data.heartbeats || [];
+  $('jobs').hidden = jobs.length === 0;
+  if (!jobs.length) return;
+  $('jobs-list').innerHTML = jobs.map((job) => runtimeRow(job)).join('');
+  $('jobs-total').textContent = `${jobs.filter((job) => job.up).length}/${jobs.length}`;
+}
+
 function renderAttention(data, remote, ai) {
   const certWarn = data.thresholds?.certWarnDays ?? 21;
   const domainWarn = data.thresholds?.domainWarnDays ?? 30;
@@ -101,6 +109,7 @@ function renderAttention(data, remote, ai) {
     ...data.targets.filter((item) => item.up && item.degraded).map((item) => ({ name: item.name, detail: item.degradedReason || 'Degraded' })),
     ...data.services.filter((item) => !item.up),
     ...remote.filter((item) => !item.up),
+    ...(data.heartbeats || []).filter((job) => !job.up).map((job) => ({ name: job.name, detail: job.detail })),
     ...(data.certificates || []).filter((c) => c.ok && c.daysRemaining != null && c.daysRemaining <= certWarn).map((c) => ({ name: `${c.host} · TLS certificate`, detail: `Expires in ${c.daysRemaining} days` })),
     ...(data.domains || []).filter((d) => d.ok && d.daysRemaining != null && d.daysRemaining <= domainWarn).map((d) => ({ name: `${d.domain} · domain registration`, detail: `Expires in ${d.daysRemaining} days` })),
     ...(ai && !ai.connected ? [{ name: ai.name, detail: ai.detail }] : []),
@@ -163,6 +172,7 @@ async function load() {
   const ai = data.aiUsage[0];
   renderProducts(data);
   renderInfrastructure(data, remote);
+  renderJobs(data);
   renderCertificates(data);
   renderAi(ai);
   const issues = renderAttention(data, remote, ai);

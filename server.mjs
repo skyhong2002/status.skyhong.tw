@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAlerter } from './alerts.mjs';
+import { createHeartbeats } from './heartbeats.mjs';
 import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from './probes.mjs';
 import { createUsageMonitor } from './usage.mjs';
 
@@ -14,6 +15,8 @@ const dockerApiUrl = process.env.DOCKER_API_URL || '';
 const certWarnDays = Number(process.env.CERT_WARN_DAYS || 21);
 const domainWarnDays = Number(process.env.DOMAIN_WARN_DAYS || 30);
 const certIntervalMs = Math.max(1, Number(process.env.CERT_CHECK_INTERVAL_HOURS || 6)) * 3600 * 1000;
+const heartbeatToken = process.env.HEARTBEAT_TOKEN || process.env.AGENT_INGEST_TOKEN || '';
+const externalHeartbeatUrl = process.env.EXTERNAL_HEARTBEAT_URL || '';
 const maxHistoryPoints = 24 * 60;
 
 const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
@@ -27,9 +30,10 @@ const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
   { id: 'n8n', name: 'n8n automations', group: 'Operations', url: 'https://n8n.skyhong.tw' },
   { id: 'freshrss', name: 'FreshRSS', group: 'Operations', url: 'https://rss.skyhong.tw' },
 ]);
-const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], agents: {}, aiUsage: [], errors: [], history: {}, thresholds: { certWarnDays, domainWarnDays } };
+const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], errors: [], history: {}, thresholds: { certWarnDays, domainWarnDays } };
 const usageMonitor = await createUsageMonitor({ dataDir });
 const alerter = await createAlerter({ dataDir });
+const heartbeats = await createHeartbeats({ dataDir });
 const publicAssets = new Map(await Promise.all([
   ['/', 'index.html', 'text/html; charset=utf-8', 'no-store'],
   ['/styles.css', 'styles.css', 'text/css; charset=utf-8', 'public, max-age=3600'],
@@ -181,11 +185,14 @@ async function refresh() {
   state.services = services;
   state.aiUsage = aiUsage;
   state.errors = errors;
-  recordHistory([...checkedTargets, ...services]);
+  const heartbeatItems = heartbeats.items();
+  state.heartbeats = heartbeatItems;
+  recordHistory([...checkedTargets, ...services, ...heartbeatItems]);
   const alertItems = [
     ...checkedTargets.map((t) => ({ id: `target:${t.id}`, name: t.name, up: t.up, detail: t.statusCode ? `HTTP ${t.statusCode} · ${t.detail}` : t.detail })),
     ...services.map((s) => ({ id: `runtime:${s.name}`, name: s.name, up: s.up, detail: s.detail })),
     ...remoteItems().map((r) => ({ id: `remote:${r.id}`, name: r.name, up: r.up, detail: r.detail })),
+    ...heartbeatItems.map((h) => ({ id: `heartbeat:${h.id}`, name: `${h.name} · heartbeat`, up: h.up, detail: h.detail })),
     // Only alert on a real, known expiry crossing the threshold — never on a check failure/timeout (avoids false incidents).
     ...state.certificates.filter((c) => c.ok && c.daysRemaining != null).map((c) => ({ id: `cert:${c.host}`, name: `${c.host} · TLS certificate`, up: c.daysRemaining > certWarnDays, detail: `valid ${c.daysRemaining}d · ${c.issuer || 'cert'}` })),
     ...state.domains.filter((d) => d.ok && d.daysRemaining != null).map((d) => ({ id: `domain:${d.domain}`, name: `${d.domain} · domain registration`, up: d.daysRemaining > domainWarnDays, detail: `expires in ${d.daysRemaining}d` })),
@@ -193,6 +200,9 @@ async function refresh() {
   if (aiUsage[0]) alertItems.push({ id: 'openai-sync', name: 'OpenAI usage collection', up: aiUsage[0].connected !== false, detail: aiUsage[0].detail || '' });
   try { await alerter.evaluate(alertItems); } catch {}
   await saveHistory();
+  if (externalHeartbeatUrl) {
+    try { void fetch(externalHeartbeatUrl, { signal: AbortSignal.timeout(10_000) }).catch(() => {}); } catch {}
+  }
 }
 
 function agentAuthorized(request) {
@@ -252,6 +262,24 @@ async function ingestAgent(request, response, agentId) {
   }
 }
 
+async function pingHeartbeat(request, response, id, url) {
+  const authorized = heartbeatToken && (
+    request.headers.authorization === `Bearer ${heartbeatToken}` || url.searchParams.get('token') === heartbeatToken
+  );
+  if (!authorized) {
+    response.writeHead(401);
+    response.end('Invalid heartbeat token');
+    return;
+  }
+  if (!heartbeats.has(id)) {
+    response.writeHead(404);
+    response.end('Unknown heartbeat');
+    return;
+  }
+  await heartbeats.record(id);
+  json(response, { ok: true });
+}
+
 function json(response, body) {
   response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(body));
@@ -273,6 +301,8 @@ const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
   const agentMatch = url.pathname.match(/^\/api\/agents\/([a-z0-9-]{1,64})$/i);
   if (request.method === 'POST' && agentMatch) return ingestAgent(request, response, agentMatch[1]);
+  const heartbeatMatch = url.pathname.match(/^\/api\/heartbeat\/([A-Za-z0-9_-]{1,64})$/);
+  if (['GET', 'POST'].includes(request.method) && heartbeatMatch) return pingHeartbeat(request, response, heartbeatMatch[1], url);
   if (url.pathname === '/api/status') return json(response, state);
   if (url.pathname === '/healthz') return json(response, { ok: true });
   const publicAsset = publicAssets.get(url.pathname);
