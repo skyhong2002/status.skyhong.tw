@@ -152,15 +152,16 @@ function renderAi(ai) {
     <div class="ai-stat"><span>Requests today</span><strong>${number(ai.requests)}</strong></div>
     <div class="ai-stat"><span>Cost · UTC day</span><strong>$${Number(ai.cost || 0).toFixed(4)}</strong></div>
   </div>`;
-  // Even-pace marker: sits at the share of the day still ahead (12h left → mid-bar, 1h left → 1/24).
-  // Reading it as a level, it is how much of the pool an evenly-paced day should still have to spend.
+  // The bar's axis is tokens *used*, so the even-pace marker sits at the share of the day already
+  // gone: fill left of the line means under budget, fill past it means burning too fast.
   const dayLeft = typeof ai.dayRemaining === 'number' ? ai.dayRemaining : null;
   const hoursLeft = dayLeft === null ? null : dayLeft * 24;
   const paceLabel = hoursLeft === null ? '' : (hoursLeft >= 1 ? `${hoursLeft.toFixed(1)}h` : `${Math.round(hoursLeft * 60)}m`);
   const pools = ai.pools.map((pool) => {
     const level = pool.percent >= 95 ? 'danger' : pool.percent >= 70 ? 'warn' : '';
     const onPace = dayLeft === null ? null : pool.remaining >= pool.paceRemaining;
-    const marker = dayLeft === null ? '' : `<i class="pace-line" style="left:${(dayLeft * 100).toFixed(2)}%" title="${esc(`${paceLabel} left today · even pace still allows ${number(pool.paceRemaining)} tokens`)}"></i>`;
+    const paceUsed = dayLeft === null ? 0 : Math.max(0, pool.limit - pool.paceRemaining);
+    const marker = dayLeft === null ? '' : `<i class="pace-line" style="left:${((1 - dayLeft) * 100).toFixed(2)}%" title="${esc(`${paceLabel} left today · at even pace ${number(paceUsed)} would be used by now, leaving ${number(pool.paceRemaining)}`)}"></i>`;
     const paceNote = dayLeft === null ? '' : `<span class="pace-note ${onPace ? '' : 'behind'}">${number(pool.paceRemaining)} at even pace</span>`;
     return `<div class="pool"><div class="pool-head"><strong>${esc(pool.name)}</strong><b>${number(pool.used)} / ${number(pool.limit)} · ${pool.percent.toFixed(1)}%</b></div><div class="pool-track"><div class="pool-fill ${level}" style="width:${Math.min(100, pool.percent)}%"></div>${marker}</div><div class="pool-foot"><span>${number(pool.remaining)} remaining</span>${paceNote}</div></div>`;
   }).join('');
@@ -169,7 +170,7 @@ function renderAi(ai) {
   const modelRows = ai.byModel.map((item) => `<tr><td>${esc(item.model || 'Unknown')}</td><td><span class="tag ${item.pool === 'billable' ? 'billable' : ''}">${esc(item.pool === 'billable' ? 'Possible billing' : `${item.pool} pool`)}</span></td><td>${number(item.tokens)}</td></tr>`);
   const keyRows = ai.byKey.map((item) => `<tr><td>${esc(item.name)}</td><td>${number(item.requests)}</td><td>${number(item.tokens)}</td></tr>`);
   const tables = `<span class="subheading">Models</span>${usageTable(['Model', 'Class', 'Tokens'], modelRows)}<span class="subheading" style="margin-top:20px">API keys</span>${usageTable(['Key / service', 'Requests', 'Tokens'], keyRows)}`;
-  const legend = dayLeft === null ? '' : `<div class="pace-legend">白線＝今日剩餘時間占比（${esc(paceLabel)}）。平均使用時，池子應剩到白線的位置。</div>`;
+  const legend = dayLeft === null ? '' : `<div class="pace-legend">白線＝照平均步調，今日到現在「應該」用掉的量（還剩 ${esc(paceLabel)}）。填色在白線左邊代表用量還有餘裕，超過白線代表用太快。</div>`;
   $('ai-panel').innerHTML = `${stats}<div class="ai-content"><div><span class="subheading">預估免費池使用量</span>${pools}${legend}${trend}</div><div>${tables}</div></div>`;
 }
 
