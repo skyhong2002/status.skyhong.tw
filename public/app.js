@@ -37,10 +37,24 @@ function statusLabel(target) {
   return { cls: '', text: 'Operational' };
 }
 
+function pct(value) {
+  if (value == null) return '—';
+  return `${value.toFixed(value >= 99.995 ? 0 : 2)}%`;
+}
+
+function slaSummary(target, data) {
+  const history = historyFor(target.id, data.history);
+  const day = history.uptime === null ? '—' : pct(history.uptime);
+  const windows = (data.uptime || {})[target.id] || {};
+  const long = windows.d30?.uptime != null ? pct(windows.d30.uptime) : (windows.d7?.uptime != null ? pct(windows.d7.uptime) : null);
+  const value = long ? `${long} · 30d` : `${day} · 24h`;
+  const tip = `24h ${day} · 7d ${pct(windows.d7?.uptime)} · 30d ${pct(windows.d30?.uptime)} · 90d ${pct(windows.d90?.uptime)}`;
+  return { bars: history.bars, value, tip };
+}
+
 function renderProducts(data) {
   $('product-list').innerHTML = data.targets.map((target) => {
-    const history = historyFor(target.id, data.history);
-    const uptime = history.uptime === null ? 'No history' : `${history.uptime.toFixed(history.uptime === 100 ? 0 : 2)}% · 24h`;
+    const sla = slaSummary(target, data);
     const label = statusLabel(target);
     const sub = target.degraded && target.degradedReason
       ? esc(target.degradedReason)
@@ -51,7 +65,7 @@ function renderProducts(data) {
         <span class="status-label ${label.cls}">${label.text}</span>
         <div class="monitor-metrics"><strong>${number(target.latencyMs)} ms</strong><span>response time</span></div>
       </div>
-      <div class="uptime-row"><div class="uptime-bars" aria-label="24 hour status history">${history.bars.map((status) => `<i class="${status}" title="${status}"></i>`).join('')}</div><span class="uptime-value">${uptime}</span></div>
+      <div class="uptime-row"><div class="uptime-bars" aria-label="24 hour status history">${sla.bars.map((status) => `<i class="${status}" title="${status}"></i>`).join('')}</div><span class="uptime-value" title="${esc(sla.tip)}">${sla.value}</span></div>
     </article>`;
   }).join('');
 }

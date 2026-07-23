@@ -26,6 +26,10 @@ The interface labels the quota view `預估免費池使用量` because the Usage
 
 Set `DISCORD_WEBHOOK_URL` to enable deduplicated alerts at 70%, 85%, and 95% for each pool. No webhook means the dashboard still shows the thresholds without sending messages.
 
+## Long-term availability
+
+Alongside the rolling 24-hour history, each check is folded into per-day uptime and latency aggregates in `/data/uptime.sqlite`, retained for 90 days. The dashboard shows 7-, 30-, and 90-day uptime for each product, so availability survives restarts and a longer SLA view is available without storing every raw data point.
+
 ## Incident alerts
 
 Set `DISCORD_ALERT_WEBHOOK_URL` to receive a Discord message whenever a monitored item goes down or recovers. This covers every public target, Docker service, remote agent item, and the OpenAI collector's own health. If the alert webhook is unset it falls back to `DISCORD_WEBHOOK_URL`; if neither is set, no alerts are sent.

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createAlerter } from './alerts.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
 import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from './probes.mjs';
+import { createUptimeStore } from './uptime.mjs';
 import { createUsageMonitor } from './usage.mjs';
 
 const port = Number(process.env.PORT || 3000);
@@ -30,10 +31,11 @@ const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
   { id: 'n8n', name: 'n8n automations', group: 'Operations', url: 'https://n8n.skyhong.tw' },
   { id: 'freshrss', name: 'FreshRSS', group: 'Operations', url: 'https://rss.skyhong.tw' },
 ]);
-const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], errors: [], history: {}, thresholds: { certWarnDays, domainWarnDays } };
+const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], errors: [], history: {}, uptime: {}, thresholds: { certWarnDays, domainWarnDays } };
 const usageMonitor = await createUsageMonitor({ dataDir });
 const alerter = await createAlerter({ dataDir });
 const heartbeats = await createHeartbeats({ dataDir });
+const uptimeStore = await createUptimeStore({ dataDir });
 const publicAssets = new Map(await Promise.all([
   ['/', 'index.html', 'text/html; charset=utf-8', 'no-store'],
   ['/styles.css', 'styles.css', 'text/css; charset=utf-8', 'public, max-age=3600'],
@@ -199,7 +201,9 @@ async function refresh() {
   state.errors = errors;
   const heartbeatItems = heartbeats.items();
   state.heartbeats = heartbeatItems;
+  const historyItems = [...checkedTargets, ...services, ...heartbeatItems, ...remoteItems()];
   recordHistory([...checkedTargets, ...services, ...heartbeatItems]);
+  try { uptimeStore.record(historyItems); state.uptime = uptimeStore.summary(historyItems.map((item) => item.id)); } catch {}
   const alertItems = [
     ...checkedTargets.map((t) => ({ id: `target:${t.id}`, name: t.name, up: t.up, detail: t.statusCode ? `HTTP ${t.statusCode} · ${t.detail}` : t.detail })),
     ...services.map((s) => ({ id: `runtime:${s.name}`, name: s.name, up: s.up, detail: s.detail })),

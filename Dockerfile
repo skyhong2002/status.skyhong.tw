@@ -6,6 +6,7 @@ COPY server.mjs ./
 COPY alerts.mjs ./
 COPY probes.mjs ./
 COPY heartbeats.mjs ./
+COPY uptime.mjs ./
 COPY usage.mjs ./
 COPY agent ./agent
 COPY public ./public
