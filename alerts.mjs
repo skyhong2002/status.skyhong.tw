@@ -32,17 +32,34 @@ export async function createAlerter(options = {}) {
   const failureThreshold = Math.max(1, Number(options.failureThreshold ?? process.env.ALERT_FAILURE_THRESHOLD ?? 2));
   const dataDir = options.dataDir ?? process.env.DATA_DIR ?? './data';
   const send = options.send ?? discordSender(webhookUrl);
+  const maxIncidents = Math.max(1, Number(options.maxIncidents ?? 200));
   const file = join(dataDir, 'alerts.json');
+  const incidentsFile = join(dataDir, 'incidents.json');
   let state = {};
+  let incidents = [];
   try {
     const loaded = JSON.parse(await readFile(file, 'utf8'));
     if (loaded && typeof loaded === 'object' && !Array.isArray(loaded)) state = loaded;
   } catch {}
+  try {
+    const loaded = JSON.parse(await readFile(incidentsFile, 'utf8'));
+    if (Array.isArray(loaded)) incidents = loaded.slice(0, maxIncidents);
+  } catch {}
+
+  async function writeAtomic(target, value) {
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(`${target}.tmp`, JSON.stringify(value), 'utf8');
+    await rename(`${target}.tmp`, target);
+  }
 
   async function save() {
-    await mkdir(dataDir, { recursive: true });
-    await writeFile(`${file}.tmp`, JSON.stringify(state), 'utf8');
-    await rename(`${file}.tmp`, file);
+    await writeAtomic(file, state);
+  }
+
+  function logIncident(event) {
+    incidents.unshift(event);
+    incidents = incidents.slice(0, maxIncidents);
+    return writeAtomic(incidentsFile, incidents).catch(() => {});
   }
 
   async function evaluate(items) {
@@ -55,9 +72,10 @@ export async function createAlerter(options = {}) {
         if (record.alerted) {
           const now = Date.now();
           const timestamp = new Date(now).toISOString();
+          const downFor = humanDuration(now - (record.downSince ?? now));
           const payload = { embeds: [{
             title: `🟢 ${item.name}`,
-            description: `**Recovered** · was down for ${humanDuration(now - (record.downSince ?? now))}${item.detail ? ` · ${item.detail}` : ''}`,
+            description: `**Recovered** · was down for ${downFor}${item.detail ? ` · ${item.detail}` : ''}`,
             color: 0x30A46C,
             timestamp,
           }] };
@@ -65,6 +83,7 @@ export async function createAlerter(options = {}) {
             if (await send(payload)) {
               record.alerted = false;
               record.downSince = null;
+              await logIncident({ at: timestamp, id: item.id, name: item.name, type: 'recovery', detail: `Recovered after ${downFor}` });
             }
           } catch {}
         }
@@ -82,6 +101,7 @@ export async function createAlerter(options = {}) {
             if (await send(payload)) {
               record.alerted = true;
               record.downSince = now;
+              await logIncident({ at: new Date(now).toISOString(), id: item.id, name: item.name, type: 'down', detail: item.detail || 'No detail' });
             }
           } catch {}
         }
@@ -91,5 +111,9 @@ export async function createAlerter(options = {}) {
     await save();
   }
 
-  return { evaluate };
+  function recentIncidents(limit = 50) {
+    return incidents.slice(0, Math.max(0, limit));
+  }
+
+  return { evaluate, recentIncidents };
 }

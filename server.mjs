@@ -5,6 +5,7 @@ import { createAlerter } from './alerts.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
 import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from './probes.mjs';
 import { createUptimeStore } from './uptime.mjs';
+import { renderMetrics, renderBadge, renderFeed, countIncidents } from './observability.mjs';
 import { createUsageMonitor } from './usage.mjs';
 
 const port = Number(process.env.PORT || 3000);
@@ -18,7 +19,27 @@ const domainWarnDays = Number(process.env.DOMAIN_WARN_DAYS || 30);
 const certIntervalMs = Math.max(1, Number(process.env.CERT_CHECK_INTERVAL_HOURS || 6)) * 3600 * 1000;
 const heartbeatToken = process.env.HEARTBEAT_TOKEN || process.env.AGENT_INGEST_TOKEN || '';
 const externalHeartbeatUrl = process.env.EXTERNAL_HEARTBEAT_URL || '';
+const maintenanceWindows = parseJson(process.env.MAINTENANCE_JSON, []);
+const publicOrigin = process.env.PUBLIC_ORIGIN || 'https://status.skyhong.tw';
 const maxHistoryPoints = 24 * 60;
+
+function activeMaintenance(now = Date.now()) {
+  return (Array.isArray(maintenanceWindows) ? maintenanceWindows : []).find((window) => {
+    const start = Date.parse(window.start);
+    const end = Date.parse(window.end);
+    return Number.isFinite(start) && Number.isFinite(end) && now >= start && now <= end;
+  }) || null;
+}
+
+const rateHits = new Map();
+function rateLimited(key, limit = 120, windowMs = 60_000) {
+  const now = Date.now();
+  const hits = (rateHits.get(key) || []).filter((t) => t > now - windowMs);
+  hits.push(now);
+  rateHits.set(key, hits);
+  if (rateHits.size > 5_000) for (const [k, v] of rateHits) if (!v.some((t) => t > now - windowMs)) rateHits.delete(k);
+  return hits.length > limit;
+}
 
 const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
   { id: 'skyhong-tw', name: 'skyhong.tw', group: 'Products', url: 'https://skyhong.tw' },
@@ -31,7 +52,7 @@ const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
   { id: 'n8n', name: 'n8n automations', group: 'Operations', url: 'https://n8n.skyhong.tw' },
   { id: 'freshrss', name: 'FreshRSS', group: 'Operations', url: 'https://rss.skyhong.tw' },
 ]);
-const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], errors: [], history: {}, uptime: {}, thresholds: { certWarnDays, domainWarnDays } };
+const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], errors: [], history: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
 const usageMonitor = await createUsageMonitor({ dataDir });
 const alerter = await createAlerter({ dataDir });
 const heartbeats = await createHeartbeats({ dataDir });
@@ -214,7 +235,8 @@ async function refresh() {
     ...state.domains.filter((d) => d.ok && d.daysRemaining != null).map((d) => ({ id: `domain:${d.domain}`, name: `${d.domain} · domain registration`, up: d.daysRemaining > domainWarnDays, detail: `expires in ${d.daysRemaining}d` })),
   ];
   if (aiUsage[0]) alertItems.push({ id: 'openai-sync', name: 'OpenAI usage collection', up: aiUsage[0].connected !== false, detail: aiUsage[0].detail || '' });
-  try { await alerter.evaluate(alertItems); } catch {}
+  state.maintenance = activeMaintenance();
+  if (!state.maintenance) { try { await alerter.evaluate(alertItems); } catch {} }
   await saveHistory();
   if (externalHeartbeatUrl) {
     try { void fetch(externalHeartbeatUrl, { signal: AbortSignal.timeout(10_000) }).catch(() => {}); } catch {}
@@ -301,6 +323,15 @@ function json(response, body) {
   response.end(JSON.stringify(body));
 }
 
+function text(response, body, contentType, cacheControl = 'no-store') {
+  response.writeHead(200, { 'content-type': contentType, 'cache-control': cacheControl });
+  response.end(body);
+}
+
+function clientIp(request) {
+  return (request.headers['x-forwarded-for'] || '').split(',')[0].trim() || request.socket.remoteAddress || 'unknown';
+}
+
 function asset(response, entry) {
   response.writeHead(200, {
     'content-type': entry.contentType,
@@ -316,11 +347,20 @@ function asset(response, entry) {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
   const agentMatch = url.pathname.match(/^\/api\/agents\/([a-z0-9-]{1,64})$/i);
-  if (request.method === 'POST' && agentMatch) return ingestAgent(request, response, agentMatch[1]);
+  if (request.method === 'POST' && agentMatch) {
+    if (rateLimited(`ingest:${clientIp(request)}`)) { response.writeHead(429); return response.end('Too many requests'); }
+    return ingestAgent(request, response, agentMatch[1]);
+  }
   const heartbeatMatch = url.pathname.match(/^\/api\/heartbeat\/([A-Za-z0-9_-]{1,64})$/);
-  if (['GET', 'POST'].includes(request.method) && heartbeatMatch) return pingHeartbeat(request, response, heartbeatMatch[1], url);
+  if (['GET', 'POST'].includes(request.method) && heartbeatMatch) {
+    if (rateLimited(`heartbeat:${clientIp(request)}`)) { response.writeHead(429); return response.end('Too many requests'); }
+    return pingHeartbeat(request, response, heartbeatMatch[1], url);
+  }
   if (url.pathname === '/api/status') return json(response, state);
   if (url.pathname === '/healthz') return json(response, { ok: true });
+  if (url.pathname === '/metrics') return text(response, renderMetrics(state), 'text/plain; version=0.0.4; charset=utf-8');
+  if (url.pathname === '/badge.svg') return text(response, renderBadge(countIncidents(state, state.thresholds)), 'image/svg+xml; charset=utf-8', 'public, max-age=60');
+  if (url.pathname === '/feed.xml') return text(response, renderFeed(alerter.recentIncidents(50), publicOrigin), 'application/rss+xml; charset=utf-8', 'public, max-age=60');
   const publicAsset = publicAssets.get(url.pathname);
   if (publicAsset) return asset(response, publicAsset);
   response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
@@ -330,7 +370,7 @@ const server = createServer(async (request, response) => {
 await loadHistory();
 if (usageMonitor) await usageMonitor.sync();
 await refresh();
-await refreshCertificates();
+refreshCertificates().catch(() => {});
 setInterval(() => refreshCertificates().catch(() => {}), certIntervalMs);
 setInterval(() => refresh().catch(() => {}), intervalMs);
 if (usageMonitor) setInterval(() => usageMonitor.sync().catch(() => {}), 60 * 60 * 1000);

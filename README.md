@@ -50,13 +50,21 @@ If a ping does not arrive within `periodSeconds + graceSeconds`, the heartbeat i
 
 Set `EXTERNAL_HEARTBEAT_URL` to have the dashboard ping an outside service (such as a Healthchecks.io check) after every successful refresh — so if the dashboard itself dies, that external service raises the alarm. This closes the "who watches the watcher" gap.
 
+## Metrics, badge, and feed
+
+- `GET /metrics` — Prometheus exposition of per-monitor availability (`sky_up`), response time, certificate and domain days-remaining, rolling uptime ratios, and the active incident count, for scraping into Grafana or Alertmanager.
+- `GET /badge.svg` — an embeddable SVG badge that reads operational or shows the active incident count.
+- `GET /feed.xml` — an RSS feed of down and recovery events, backed by an incident log in `/data/incidents.json`.
+
+Set `MAINTENANCE_JSON` to an array of `{ start, end, reason }` ISO windows to pause alerts and show a maintenance banner during planned work. The agent ingest and heartbeat endpoints are rate limited per client IP.
+
 ## Deployment
 
 The Compose stack joins `dokploy-network` and uses Dokploy's existing Traefik middleware and Let's Encrypt resolver. It runs in `/home/ubuntu/apps/sky-status-dashboard` on the host.
 
 ## SkyLabMac agent
 
-`agent/skylabmac_agent.py` is a standard-library-only LaunchAgent. It sends a summary of selected macOS processes to the dashboard once a minute, along with host metrics — root disk usage, load average, and memory pressure — each flagged when it crosses a threshold. Its token is stored only in `~/.config/sky-status-agent.json` with mode `600`; it does not open any listening port on SkyLabMac.
+`agent/skylabmac_agent.py` is a standard-library-only LaunchAgent. It sends a summary of selected macOS processes to the dashboard once a minute, along with host metrics — root disk usage, load average, and memory pressure — each flagged when it crosses a threshold. It authenticates with a bearer token stored only in `~/.config/sky-status-agent.json` with mode `600`; it does not open any listening port on SkyLabMac.
 
 `agent/vps_host_reporter.sh` does the same for the Linux VPS: run it once a minute from cron and it posts disk, memory, and load to the dashboard as the `vps` remote agent. It reads `AGENT_INGEST_TOKEN` from the environment or from the adjacent deployment `.env`.
 

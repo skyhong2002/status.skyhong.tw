@@ -36,6 +36,8 @@ main { padding-block: 34px 64px; }
 
 .global-state { min-height: 94px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 22px 24px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .global-state.degraded { border-color: #60404a; background: #171113; }
+.global-state.maintenance { border-color: #5a5230; background: #16130c; }
+.maintenance .state-indicator { background: var(--amber); box-shadow: 0 0 0 5px #3a3115; }
 .state-copy { display: flex; align-items: center; gap: 15px; min-width: 0; }
 .state-copy > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .state-copy strong { font-size: 19px; letter-spacing: 0; }

@@ -166,6 +166,21 @@ function renderAi(ai) {
 
 function renderGlobal(data, remote, ai, issues) {
   const healthy = issues.length === 0;
+  if (data.maintenance) {
+    $('global-state').classList.remove('degraded');
+    $('global-state').classList.add('maintenance');
+    $('global-title').textContent = 'Scheduled maintenance in progress';
+    $('global-detail').textContent = data.maintenance.reason || 'Alerts are paused during this maintenance window.';
+    $('state-time').textContent = new Date(data.checkedAt).toLocaleString();
+    $('last-check').textContent = `Updated ${new Date(data.checkedAt).toLocaleTimeString()}`;
+    document.title = 'Maintenance · Sky Status';
+    $('summary-public').textContent = `${data.targets.filter((item) => item.up).length} / ${data.targets.length}`;
+    $('summary-docker').textContent = `${data.services.filter((item) => item.up).length} / ${data.services.length}`;
+    $('summary-remote').textContent = `${remote.filter((item) => item.up).length} / ${remote.length}`;
+    $('summary-ai').textContent = number(ai?.requests);
+    return;
+  }
+  $('global-state').classList.remove('maintenance');
   $('global-state').classList.toggle('degraded', !healthy);
   $('global-title').textContent = healthy ? 'All systems operational' : `${issues.length} ${issues.length === 1 ? 'system needs' : 'systems need'} attention`;
   $('global-detail').textContent = healthy ? 'All monitored products and runtimes are responding normally.' : 'Current incidents and degraded checks are listed below.';
