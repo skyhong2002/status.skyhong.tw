@@ -53,6 +53,13 @@ function zonedDayStart(date, timeZone) {
   return Math.floor(guess / 1000);
 }
 
+// Fraction of the reporting day still ahead: 1 at local midnight, 0.5 with 12h left, 1/24 with 1h left.
+// The free pools reset daily, so this doubles as the even-pace share of each pool that should remain unspent.
+function dayRemainingFraction(dayStartSeconds, nowMs = Date.now()) {
+  const elapsed = (nowMs / 1000 - dayStartSeconds) / 86_400;
+  return Math.min(1, Math.max(0, 1 - elapsed));
+}
+
 async function fetchPages(path, params, apiKey) {
   const buckets = [];
   let page;
@@ -150,14 +157,23 @@ export async function createUsageMonitor(options = {}) {
     const trend = db.prepare(`SELECT bucket_start start, SUM(input_tokens + output_tokens) tokens, SUM(requests) requests
       FROM usage_snapshots WHERE bucket_start >= ? GROUP BY bucket_start ORDER BY bucket_start`).all(trendStart);
     const used = (pool) => byModel.filter((row) => row.pool === pool).reduce((sum, row) => sum + row.tokens, 0);
+    // Share of the reporting day still ahead. The free pools reset at local midnight, so an
+    // even-paced day should have this fraction of each pool still unspent.
+    const dayRemaining = dayRemainingFraction(today, Date.now());
     const pools = [
       { id: 'high', name: 'High-tier pool', used: used('high'), limit: highLimit },
       { id: 'mini', name: 'Mini / nano pool', used: used('mini'), limit: miniLimit },
-    ].map((pool) => ({ ...pool, remaining: Math.max(0, pool.limit - pool.used), percent: pool.limit ? (pool.used / pool.limit) * 100 : 0 }));
+    ].map((pool) => ({
+      ...pool,
+      remaining: Math.max(0, pool.limit - pool.used),
+      percent: pool.limit ? (pool.used / pool.limit) * 100 : 0,
+      paceRemaining: Math.round(dayRemaining * pool.limit),
+    }));
     return {
       id: 'openai', name: 'OpenAI organization', connected: !lastError, detail: lastError || 'Organization Usage API',
       input: totals.input, output: totals.output, requests: totals.requests, cost: cost.amount, currency: cost.currency,
       pools, byModel, byKey, byProject, byTier, trend, timeZone, lastSyncAt,
+      dayRemaining, dayRemainingHours: dayRemaining * 24,
       possibleBillable: byModel.filter((row) => row.pool === 'billable'),
     };
   }
@@ -219,4 +235,4 @@ export async function createUsageMonitor(options = {}) {
   return { sync, summary };
 }
 
-export { jsonEnv, matchesModel, poolForUsage, zonedDayStart };
+export { dayRemainingFraction, jsonEnv, matchesModel, poolForUsage, zonedDayStart };

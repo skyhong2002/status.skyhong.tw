@@ -126,7 +126,11 @@ h3 { font-size: 14px; }
 .pool { margin: 12px 0 22px; }
 .pool-head { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 7px; font-size: 11px; }
 .pool-head b { font-variant-numeric: tabular-nums; }
-.pool-track { height: 8px; background: #273034; overflow: hidden; }
+.pool-track { position: relative; height: 8px; background: #273034; overflow: hidden; }
+.pace-line { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); box-shadow: 0 0 0 1px rgba(11, 14, 16, .55); }
+.pace-note { color: var(--muted); }
+.pace-note.behind { color: var(--amber); }
+.pace-legend { margin: -12px 0 22px; color: var(--faint); font-size: 10px; line-height: 1.45; }
 .pool-fill { height: 100%; background: var(--green); }
 .pool-fill.warn { background: var(--amber); }
 .pool-fill.danger { background: var(--red); }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { jsonEnv, matchesModel, poolForUsage, zonedDayStart } from './usage.mjs';
+import { dayRemainingFraction, jsonEnv, matchesModel, poolForUsage, zonedDayStart } from './usage.mjs';
 
 test('parses configuration without throwing on invalid JSON', () => {
   assert.deepEqual(jsonEnv('["gpt-5-mini"]', []), ['gpt-5-mini']);
@@ -24,6 +24,16 @@ test('uses the reported service tier before model configuration', () => {
 test('falls back to configured model patterns without a service tier', () => {
   assert.equal(poolForUsage('gpt-5.4-2026-03-05', '', ['gpt-5.4-*'], ['*mini*']), 'high');
   assert.equal(poolForUsage('unknown-model', '', ['gpt-5.4-*'], ['*mini*']), 'billable');
+});
+
+test('places the even-pace marker by the time left in the day', () => {
+  const dayStart = Math.floor(Date.parse('2026-07-16T16:00:00Z') / 1000); // Taipei midnight
+  const at = (hoursIn) => dayStart * 1000 + hoursIn * 3_600_000;
+  assert.equal(dayRemainingFraction(dayStart, at(0)), 1);
+  assert.ok(Math.abs(dayRemainingFraction(dayStart, at(12)) - 0.5) < 1e-9); // 12h left -> mid-bar
+  assert.ok(Math.abs(dayRemainingFraction(dayStart, at(23)) - 1 / 24) < 1e-9); // 1h left -> 1/24
+  assert.equal(dayRemainingFraction(dayStart, at(24)), 0);
+  assert.equal(dayRemainingFraction(dayStart, at(30)), 0); // clamped past midnight
 });
 
 test('finds midnight in the configured reporting timezone', () => {
