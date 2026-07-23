@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAlerter } from './alerts.mjs';
@@ -65,6 +66,16 @@ const publicAssets = new Map(await Promise.all([
 ].map(async ([path, file, contentType, cacheControl]) => [path, {
   body: await readFile(new URL(`./public/${file}`, import.meta.url)), contentType, cacheControl,
 }])));
+
+// Fingerprint the cached assets and rewrite the (uncached) index so a deploy reaches
+// browsers immediately instead of after the asset max-age expires.
+{
+  const version = (path) => createHash('sha1').update(publicAssets.get(path).body).digest('hex').slice(0, 8);
+  const index = publicAssets.get('/');
+  index.body = Buffer.from(index.body.toString('utf8')
+    .replace('/styles.css', `/styles.css?v=${version('/styles.css')}`)
+    .replace('/app.js', `/app.js?v=${version('/app.js')}`));
+}
 
 function parseJson(value, fallback) {
   if (!value) return fallback;
