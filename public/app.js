@@ -149,7 +149,7 @@ function renderAttention(data, remote, ai) {
   ];
   $('attention-section').hidden = issues.length === 0;
   $('attention-count').textContent = `${issues.length} active`;
-  $('attention').innerHTML = issues.map((issue) => `<div class="incident"><i></i><div><strong>${esc(issue.name)}</strong><span>${esc(issue.detail || 'Needs review')}</span></div><b>Investigating</b></div>`).join('');
+  $('attention').innerHTML = issues.map((issue) => `<div class="incident"><i></i><div><strong>${esc(issue.name)}</strong><span>${esc(issue.detail || 'Needs review')}</span></div><b>Review</b></div>`).join('');
   return issues;
 }
 
@@ -211,7 +211,7 @@ function renderGlobal(data, remote, ai, issues) {
   $('global-state').classList.remove('maintenance');
   $('global-state').classList.toggle('degraded', !healthy);
   $('global-title').textContent = healthy ? 'All systems operational' : `${issues.length} ${issues.length === 1 ? 'item needs' : 'items need'} attention`;
-  $('global-detail').textContent = healthy ? 'All monitored products and runtimes are responding normally.' : 'Current incidents and degraded checks are listed below.';
+  $('global-detail').textContent = healthy ? 'All monitored products and runtimes are responding normally.' : 'Current attention items and degraded checks are listed below.';
   $('state-time').textContent = new Date(data.checkedAt).toLocaleString();
   $('last-check').textContent = `Updated ${new Date(data.checkedAt).toLocaleTimeString()}`;
   $('summary-public').textContent = `${data.targets.filter((item) => item.up).length} / ${data.targets.length}`;
