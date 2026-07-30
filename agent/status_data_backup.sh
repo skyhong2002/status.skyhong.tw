@@ -37,12 +37,12 @@ docker exec "$CONTAINER" node --input-type=module -e '
     db.close();
   }
 '
-docker cp "$CONTAINER:/tmp/status-usage-backup.sqlite" "$work_dir/usage.sqlite" >/dev/null
-docker cp "$CONTAINER:/tmp/status-uptime-backup.sqlite" "$work_dir/uptime.sqlite" >/dev/null
+docker exec "$CONTAINER" cat /tmp/status-usage-backup.sqlite > "$work_dir/usage.sqlite"
+docker exec "$CONTAINER" cat /tmp/status-uptime-backup.sqlite > "$work_dir/uptime.sqlite"
 
 for state_file in agents.json alerts.json alert-delivery.json history.json incidents.json heartbeats.json; do
   if docker exec "$CONTAINER" test -f "/data/$state_file"; then
-    docker cp "$CONTAINER:/data/$state_file" "$work_dir/$state_file" >/dev/null
+    docker exec "$CONTAINER" cat "/data/$state_file" > "$work_dir/$state_file"
   fi
 done
 
