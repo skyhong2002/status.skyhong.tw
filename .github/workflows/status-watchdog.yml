@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      test_notification:
+        description: Send a labeled Discord health-check message
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -36,12 +42,14 @@ jobs:
         uses: actions/github-script@v8
         env:
           PROBE_OK: ${{ steps.probe.outcome == 'success' }}
+          TEST_NOTIFICATION: ${{ github.event_name == 'workflow_dispatch' && inputs.test_notification }}
           DISCORD_WEBHOOK_URL: ${{ secrets.STATUS_DISCORD_WEBHOOK_URL }}
         with:
           script: |
             const title = '[watchdog] status.skyhong.tw unavailable';
             const { owner, repo } = context.repo;
             const ok = process.env.PROBE_OK === 'true';
+            const testNotification = process.env.TEST_NOTIFICATION === 'true';
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner, repo, state: 'open', per_page: 100,
             });
@@ -80,6 +88,15 @@ jobs:
               }
               core.setFailed('status.skyhong.tw deep health probe failed');
               return;
+            }
+
+            if (testNotification && !issue) {
+              await discord({ embeds: [{
+                title: 'status.skyhong.tw external watchdog health check',
+                description: '**HEALTH CHECK** - the external deep-health probe and Discord delivery are working.',
+                color: 0x2F80ED,
+                timestamp: new Date().toISOString(),
+              }] });
             }
 
             if (issue) {
