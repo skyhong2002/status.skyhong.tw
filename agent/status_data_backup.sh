@@ -26,18 +26,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker exec "$CONTAINER" node -e '
-  const { DatabaseSync, backup } = require("node:sqlite");
-  (async () => {
-    for (const [source, destination] of [
-      ["/data/usage.sqlite", "/tmp/status-usage-backup.sqlite"],
-      ["/data/uptime.sqlite", "/tmp/status-uptime-backup.sqlite"],
-    ]) {
-      const db = new DatabaseSync(source, { readOnly: true });
-      await backup(db, destination);
-      db.close();
-    }
-  })().catch((error) => { console.error(error); process.exit(1); });
+docker exec "$CONTAINER" node --input-type=module -e '
+  import { DatabaseSync, backup } from "node:sqlite";
+  for (const [source, destination] of [
+    ["/data/usage.sqlite", "/tmp/status-usage-backup.sqlite"],
+    ["/data/uptime.sqlite", "/tmp/status-uptime-backup.sqlite"],
+  ]) {
+    const db = new DatabaseSync(source, { readOnly: true });
+    await backup(db, destination);
+    db.close();
+  }
 '
 docker cp "$CONTAINER:/tmp/status-usage-backup.sqlite" "$work_dir/usage.sqlite" >/dev/null
 docker cp "$CONTAINER:/tmp/status-uptime-backup.sqlite" "$work_dir/uptime.sqlite" >/dev/null
