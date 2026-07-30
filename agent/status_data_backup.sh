@@ -18,6 +18,7 @@ if [ "${STATUS_BACKUP_SKIP_HEARTBEAT:-0}" != "1" ]; then
 fi
 
 mkdir -p "$BACKUP_ROOT"
+chmod 700 "$BACKUP_ROOT"
 work_dir=$(mktemp -d)
 cleanup() {
   docker exec "$CONTAINER" rm -f /tmp/status-usage-backup.sqlite /tmp/status-uptime-backup.sqlite >/dev/null 2>&1 || true
@@ -52,6 +53,7 @@ archive_tmp="$BACKUP_ROOT/.status-$stamp.tar.gz.tmp"
 archive="$BACKUP_ROOT/status-$stamp.tar.gz"
 tar -C "$work_dir" -czf "$archive_tmp" .
 mv "$archive_tmp" "$archive"
+chmod 600 "$archive"
 find "$BACKUP_ROOT" -type f -name 'status-*.tar.gz' -mtime "+$RETENTION_DAYS" -delete
 
 if [ "${STATUS_BACKUP_SKIP_HEARTBEAT:-0}" != "1" ]; then
