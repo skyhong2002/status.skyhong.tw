@@ -65,6 +65,8 @@ Set `MAINTENANCE_JSON` to an array of `{ start, end, reason }` ISO windows to pa
 
 The Compose stack joins `dokploy-network` and uses Dokploy's existing Traefik middleware and Let's Encrypt resolver. It runs in `/home/ubuntu/apps/sky-status-dashboard` on the host.
 
+Before deployment, back up `.env`, then run `node scripts/configure_production_env.mjs .env .env.example` to apply the checked-in target/heartbeat configuration, generate a dedicated heartbeat token when absent, and populate the usage webhook from the incident webhook when no separate channel is configured.
+
 The application runs as UID/GID 1000 with all capabilities dropped, a read-only root filesystem, a writable `/data` volume, and a small temporary filesystem. Security headers include HSTS, CSP, frame denial, and a restrictive permissions policy.
 
 ## SkyLabMac agent
