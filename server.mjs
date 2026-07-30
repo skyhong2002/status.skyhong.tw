@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAlerter } from './alerts.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
+import { buildHealthSnapshot } from './health.mjs';
 import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from './probes.mjs';
 import { createUptimeStore } from './uptime.mjs';
 import { renderMetrics, renderBadge, renderFeed, countIncidents } from './observability.mjs';
@@ -44,17 +45,17 @@ function rateLimited(key, limit = 120, windowMs = 60_000) {
 }
 
 const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
-  { id: 'skyhong-tw', name: 'skyhong.tw', group: 'Products', url: 'https://skyhong.tw' },
+  { id: 'skyhong-tw', name: 'skyhong.tw', group: 'Products', url: 'https://skyhong.tw', keyword: 'Sky Hong' },
   { id: 'youtube-board-tw', name: 'youtube.board.tw', group: 'Products', url: 'https://youtube.board.tw', acceptedStatuses: [200, 301, 302, 307, 308, 403] },
-  { id: 'harmonica-observe', name: 'harmonica.observe.tw', group: 'Products', url: 'https://harmonica.observe.tw' },
-  { id: 'youtube-observe', name: 'youtube.observe.tw', group: 'Products', url: 'https://youtube.observe.tw' },
-  { id: 'plaud-skyhong', name: 'plaud.observe.tw', group: 'Products', url: 'https://plaud.observe.tw', acceptedStatuses: [200, 301, 302, 307, 308, 401] },
-  { id: 'mayor2026-observe', name: 'mayor2026.observe.tw', group: 'Products', url: 'https://mayor2026.observe.tw' },
-  { id: 'infovore', name: 'Infovore', group: 'Products', url: 'https://infovore.skyhong.tw' },
-  { id: 'n8n', name: 'n8n automations', group: 'Operations', url: 'https://n8n.skyhong.tw' },
-  { id: 'freshrss', name: 'FreshRSS', group: 'Operations', url: 'https://rss.skyhong.tw' },
+  { id: 'harmonica-observe', name: 'harmonica.observe.tw', group: 'Products', url: 'https://harmonica.observe.tw', keyword: '臺灣口琴觀測站' },
+  { id: 'youtube-observe', name: 'youtube.observe.tw', group: 'Products', url: 'https://youtube.observe.tw', keyword: 'YouTube Board' },
+  { id: 'plaud-skyhong', name: 'plaud.observe.tw', group: 'Products', url: 'https://plaud.observe.tw', checkUrl: 'https://plaud.observe.tw/healthz', keyword: '"status":"ok"' },
+  { id: 'mayor2026-observe', name: 'mayor2026.observe.tw', group: 'Products', url: 'https://mayor2026.observe.tw', keyword: '2026 市長' },
+  { id: 'infovore', name: 'Infovore', group: 'Products', url: 'https://infovore.skyhong.tw', keyword: 'infovore', latencyThresholdMs: 5000 },
+  { id: 'n8n', name: 'n8n automations', group: 'Operations', url: 'https://n8n.skyhong.tw', checkUrl: 'https://n8n.skyhong.tw/healthz/readiness', keyword: '"status":"ok"' },
+  { id: 'freshrss', name: 'FreshRSS', group: 'Operations', url: 'https://rss.skyhong.tw', keyword: 'FreshRSS' },
 ]);
-const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], errors: [], history: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
+const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], alertDelivery: {}, errors: [], history: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
 const usageMonitor = await createUsageMonitor({ dataDir });
 const alerter = await createAlerter({ dataDir });
 const heartbeats = await createHeartbeats({ dataDir });
@@ -90,10 +91,11 @@ function elapsed(ms) {
 
 async function checkTarget(target) {
   const startedAt = Date.now();
+  const checkUrl = target.checkUrl || target.url;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), target.timeoutMs || 12_000);
   try {
-    const response = await fetch(target.url, { method: 'GET', redirect: 'follow', signal: controller.signal });
+    const response = await fetch(checkUrl, { method: 'GET', redirect: 'follow', signal: controller.signal });
     const accepted = target.acceptedStatuses || [];
     let up = accepted.length ? accepted.includes(response.status) : response.status >= 200 && response.status < 400;
     let detail = response.statusText || 'Reachable';
@@ -116,7 +118,7 @@ async function checkTarget(target) {
   } catch (error) {
     let detail = error.name === 'AbortError' ? 'Timed out' : 'Unreachable';
     try {
-      const dnsResult = await resolveHost(new URL(target.url).hostname);
+      const dnsResult = await resolveHost(new URL(checkUrl).hostname);
       if (!dnsResult.ok) detail = 'DNS resolution failed';
     } catch {}
     return { ...target, up: false, statusCode: null, latencyMs: Date.now() - startedAt, detail, degraded: false, degradedReason: null };
@@ -249,6 +251,10 @@ async function refresh() {
   if (aiUsage[0]) alertItems.push({ id: 'openai-sync', name: 'OpenAI usage collection', up: aiUsage[0].connected !== false, detail: aiUsage[0].detail || '' });
   state.maintenance = activeMaintenance();
   if (!state.maintenance) { try { await alerter.evaluate(alertItems); } catch {} }
+  state.alertDelivery = {
+    incident: alerter.deliveryStatus(),
+    usage: aiUsage[0]?.alertDelivery || { configured: false },
+  };
   await saveHistory();
   if (externalHeartbeatUrl) {
     try { void fetch(externalHeartbeatUrl, { signal: AbortSignal.timeout(10_000) }).catch(() => {}); } catch {}
@@ -330,13 +336,23 @@ async function pingHeartbeat(request, response, id, url) {
   json(response, { ok: true });
 }
 
-function json(response, body) {
-  response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+function securityHeaders() {
+  return {
+    'strict-transport-security': 'max-age=31536000; includeSubDomains',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'referrer-policy': 'no-referrer',
+    'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+  };
+}
+
+function json(response, body, status = 200) {
+  response.writeHead(status, { ...securityHeaders(), 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(body));
 }
 
-function text(response, body, contentType, cacheControl = 'no-store') {
-  response.writeHead(200, { 'content-type': contentType, 'cache-control': cacheControl });
+function text(response, body, contentType, cacheControl = 'no-store', status = 200) {
+  response.writeHead(status, { ...securityHeaders(), 'content-type': contentType, 'cache-control': cacheControl });
   response.end(body);
 }
 
@@ -346,13 +362,38 @@ function clientIp(request) {
 
 function asset(response, entry) {
   response.writeHead(200, {
+    ...securityHeaders(),
     'content-type': entry.contentType,
     'cache-control': entry.cacheControl,
     'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'",
-    'x-content-type-options': 'nosniff',
-    'referrer-policy': 'no-referrer',
   });
   response.end(entry.body);
+}
+
+function healthSnapshot(now = Date.now()) {
+  return buildHealthSnapshot({
+    state,
+    intervalMs,
+    dockerConfigured: Boolean(dockerApiUrl),
+    usageConfigured: Boolean(usageMonitor),
+    usageSyncIntervalMs,
+  }, now);
+}
+
+async function testAlerts(request, response) {
+  if (!agentAuthorized(request)) {
+    response.writeHead(401, securityHeaders());
+    response.end('Invalid agent token');
+    return;
+  }
+  const incident = await alerter.testDelivery();
+  const usage = usageMonitor ? await usageMonitor.testAlert() : true;
+  state.alertDelivery = {
+    incident: alerter.deliveryStatus(),
+    usage: usageMonitor?.summary().alertDelivery || { configured: false },
+  };
+  const ok = incident && usage;
+  json(response, { ok, incident, usage, delivery: state.alertDelivery }, ok ? 200 : 502);
 }
 
 
@@ -368,15 +409,22 @@ const server = createServer(async (request, response) => {
     if (rateLimited(`heartbeat:${clientIp(request)}`)) { response.writeHead(429); return response.end('Too many requests'); }
     return pingHeartbeat(request, response, heartbeatMatch[1], url);
   }
+  if (request.method === 'POST' && url.pathname === '/api/alerts/test') {
+    if (rateLimited(`alert-test:${clientIp(request)}`, 5, 60_000)) { response.writeHead(429, securityHeaders()); return response.end('Too many requests'); }
+    return testAlerts(request, response);
+  }
   if (url.pathname === '/api/status') return json(response, state);
-  if (url.pathname === '/healthz') return json(response, { ok: true });
+  if (url.pathname === '/livez') return json(response, { ok: true });
+  if (url.pathname === '/healthz') {
+    const health = healthSnapshot();
+    return json(response, health, health.ok ? 200 : 503);
+  }
   if (url.pathname === '/metrics') return text(response, renderMetrics(state), 'text/plain; version=0.0.4; charset=utf-8');
   if (url.pathname === '/badge.svg') return text(response, renderBadge(countIncidents(state, state.thresholds)), 'image/svg+xml; charset=utf-8', 'public, max-age=60');
   if (url.pathname === '/feed.xml') return text(response, renderFeed(alerter.recentIncidents(50), publicOrigin), 'application/rss+xml; charset=utf-8', 'public, max-age=60');
   const publicAsset = publicAssets.get(url.pathname);
   if (publicAsset) return asset(response, publicAsset);
-  response.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-  response.end('Not found');
+  return text(response, 'Not found', 'text/plain; charset=utf-8', 'no-store', 404);
 });
 
 await loadHistory();

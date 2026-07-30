@@ -18,6 +18,9 @@ test('aggregates uptime and latency across a window', async () => {
   const a = store.windowFor('a', 7);
   assert.equal(a.uptime, (2 / 3) * 100);
   assert.equal(a.avgLatency, 200); // (100+200+300)/3
+  assert.equal(a.observedDays, 1);
+  assert.equal(a.windowDays, 7);
+  assert.equal(a.complete, false);
 
   const b = store.windowFor('b', 7);
   assert.equal(b.uptime, 50);
@@ -36,6 +39,8 @@ test('summary reports all requested windows', async () => {
   assert.equal(summary.x.d7.uptime, 100);
   assert.equal(summary.x.d30.uptime, 100);
   assert.equal(summary.x.d90.uptime, 100);
+  assert.equal(summary.x.d30.observedDays, 1);
+  assert.equal(summary.x.d30.complete, false);
 });
 
 test('persists aggregates across reopen', async () => {

@@ -65,6 +65,19 @@ test('retries a failed down alert', async () => {
   await alerter.evaluate([item]);
   await alerter.evaluate([item]);
   assert.equal(attempts, 2);
+  assert.equal(alerter.deliveryStatus().configured, true);
+  assert.equal(Boolean(alerter.deliveryStatus().lastFailureAt), true);
+  assert.match(alerter.deliveryStatus().lastError, /unsuccessful/);
+});
+
+test('records successful test delivery telemetry', async () => {
+  const alerter = await createAlerter({ dataDir: temporaryDataDir(), send: async () => true });
+  assert.equal(await alerter.testDelivery(), true);
+  const status = alerter.deliveryStatus();
+  assert.equal(status.configured, true);
+  assert.equal(Boolean(status.lastAttemptAt), true);
+  assert.equal(status.lastSuccessAt, status.lastAttemptAt);
+  assert.equal(status.lastError, null);
 });
 
 test('formats compact human durations', () => {

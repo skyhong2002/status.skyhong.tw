@@ -14,6 +14,10 @@ const state = {
   domains: [{ domain: 'a.tw', ok: true, daysRemaining: 200 }],
   agents: {},
   uptime: { a: { d7: { uptime: 100 }, d30: { uptime: 99.5 }, d90: { uptime: 98 } } },
+  alertDelivery: {
+    incident: { configured: true, lastSuccessAt: '2026-07-24T01:00:00Z', lastFailureAt: null },
+    usage: { configured: true, lastSuccessAt: '2026-07-24T02:00:00Z', lastFailureAt: '2026-07-24T01:00:00Z' },
+  },
   thresholds: { certWarnDays: 21, domainWarnDays: 30 },
 };
 
@@ -31,6 +35,8 @@ test('renders Prometheus exposition with escaped labels and expected metrics', (
   assert.match(out, /sky_domain_days_remaining\{domain="a.tw"\} 200/);
   assert.match(out, /sky_uptime_ratio\{id="a",window="30d"\} 0\.995000/);
   assert.match(out, /sky_incidents_total\{\} 4/);
+  assert.match(out, /sky_alert_webhook_configured\{channel="incident"\} 1/);
+  assert.match(out, /sky_alert_delivery_healthy\{channel="usage"\} 1/);
   assert.match(out, /# TYPE sky_up gauge/);
 });
 

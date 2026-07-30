@@ -26,7 +26,10 @@ export async function createUptimeStore(options = {}) {
       up = up + excluded.up, total = total + 1,
       latency_sum = latency_sum + excluded.latency_sum, latency_n = latency_n + excluded.latency_n
   `);
-  const windowStmt = db.prepare('SELECT COALESCE(SUM(up),0) up, COALESCE(SUM(total),0) total, COALESCE(SUM(latency_sum),0) ls, COALESCE(SUM(latency_n),0) ln FROM uptime_daily WHERE id = ? AND day >= ?');
+  const windowStmt = db.prepare(`SELECT COALESCE(SUM(up),0) up, COALESCE(SUM(total),0) total,
+    COALESCE(SUM(latency_sum),0) ls, COALESCE(SUM(latency_n),0) ln,
+    COUNT(DISTINCT day) observed_days
+    FROM uptime_daily WHERE id = ? AND day >= ?`);
 
   function today() {
     return Math.floor(Date.now() / DAY_MS);
@@ -52,7 +55,13 @@ export async function createUptimeStore(options = {}) {
   function windowFor(id, days) {
     const row = windowStmt.get(id, today() - (days - 1));
     if (!row.total) return null;
-    return { uptime: (row.up / row.total) * 100, avgLatency: row.ln ? row.ls / row.ln : null };
+    return {
+      uptime: (row.up / row.total) * 100,
+      avgLatency: row.ln ? row.ls / row.ln : null,
+      observedDays: row.observed_days,
+      windowDays: days,
+      complete: row.observed_days >= days,
+    };
   }
 
   function summary(ids) {

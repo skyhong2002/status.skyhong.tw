@@ -8,7 +8,7 @@ The public interface uses a Kener-inspired status banner, monitor grouping, and 
 
 ## Add a product
 
-Set `STATUS_TARGETS_JSON` in the deployment `.env` to an array of objects with `id`, `name`, `group`, and `url`. HTTP 2xx and 3xx responses are healthy by default. A target can set `acceptedStatuses` for an expected authentication or edge-protection response such as Cloudflare's 403 challenge.
+Set `STATUS_TARGETS_JSON` in the deployment `.env` to an array of objects with `id`, `name`, `group`, and `url`. HTTP 2xx and 3xx responses are healthy by default. A target can set `checkUrl` when the visitor URL differs from a dedicated health endpoint, or `acceptedStatuses` for an expected authentication or edge-protection response such as Cloudflare's 403 challenge.
 
 A target can also assert on the response body and latency: `keyword` marks the check down unless the body contains that text, `keywordAbsent` marks it down if the body contains that text, and `latencyThresholdMs` marks the target *degraded* (still up, shown amber) when a response is slower than the threshold. A request that fails to connect is additionally probed with a DNS lookup so a resolution failure is reported distinctly from an unreachable host.
 
@@ -28,13 +28,13 @@ Set `DISCORD_WEBHOOK_URL` to enable deduplicated alerts at 70%, 85%, and 95% for
 
 ## Long-term availability
 
-Alongside the rolling 24-hour history, each check is folded into per-day uptime and latency aggregates in `/data/uptime.sqlite`, retained for 90 days. The dashboard shows 7-, 30-, and 90-day uptime for each product, so availability survives restarts and a longer SLA view is available without storing every raw data point.
+Alongside the rolling 24-hour history, each check is folded into per-day uptime and latency aggregates in `/data/uptime.sqlite`, retained for 90 days. The dashboard shows the actual observed-day coverage until enough data exists for a complete 7-, 30-, or 90-day window, so a new deployment does not present partial history as a full SLA period.
 
 ## Incident alerts
 
 Set `DISCORD_ALERT_WEBHOOK_URL` to receive a Discord message whenever a monitored item goes down or recovers. This covers every public target, Docker service, remote agent item, and the OpenAI collector's own health. If the alert webhook is unset it falls back to `DISCORD_WEBHOOK_URL`; if neither is set, no alerts are sent.
 
-An item must fail `ALERT_FAILURE_THRESHOLD` consecutive checks (default 2) before a down alert fires, which suppresses single-check flapping. Each incident sends exactly one down message and one recovery message; the recovery note includes how long the item was down. Incident state is persisted to `/data/alerts.json`, so a restart neither loses an open incident nor re-sends an alert that already went out. A webhook that fails to deliver is retried on the next cycle rather than being marked as sent.
+An item must fail `ALERT_FAILURE_THRESHOLD` consecutive checks (default 2) before a down alert fires, which suppresses single-check flapping. Each incident sends exactly one down message and one recovery message; the recovery note includes how long the item was down. Incident state is persisted to `/data/alerts.json`, so a restart neither loses an open incident nor re-sends an alert that already went out. A webhook that fails to deliver is retried on the next cycle rather than being marked as sent. Delivery attempts, successes, and failures are persisted and exposed through the public status API and Prometheus metrics. An authenticated `POST /api/alerts/test` checks both Discord webhook paths end to end.
 
 These outage alerts are independent of the OpenAI free-pool threshold alerts, so the two can target different channels.
 
@@ -48,19 +48,24 @@ curl -fsS "https://status.skyhong.tw/api/heartbeat/nightly-backup?token=$HEARTBE
 
 If a ping does not arrive within `periodSeconds + graceSeconds`, the heartbeat is marked late, surfaced on the dashboard, and sent as an incident alert. This generalizes the bespoke Bamboo watcher freshness check to any job.
 
-Set `EXTERNAL_HEARTBEAT_URL` to have the dashboard ping an outside service (such as a Healthchecks.io check) after every successful refresh — so if the dashboard itself dies, that external service raises the alarm. This closes the "who watches the watcher" gap.
+The included `External status watchdog` GitHub Actions workflow probes the deep `/healthz` endpoint every five minutes, deduplicates failures with a GitHub Issue, and sends Discord down/recovery messages. This remains independent when the VPS or dashboard is unavailable. `EXTERNAL_HEARTBEAT_URL` remains available as an optional second dead-man service.
+
+The production heartbeat set covers the VPS reporter, Bamboo Discord watcher, n8n scheduler, and the daily status-data backup. `agent/status_data_backup.sh` uses SQLite's online backup API, archives the JSON state, retains 14 days, and records its heartbeat only after the archive completes.
 
 ## Metrics, badge, and feed
 
 - `GET /metrics` — Prometheus exposition of per-monitor availability (`sky_up`), response time, certificate and domain days-remaining, rolling uptime ratios, and the active incident count, for scraping into Grafana or Alertmanager.
 - `GET /badge.svg` — an embeddable SVG badge that reads operational or shows the active incident count.
 - `GET /feed.xml` — an RSS feed of down and recovery events, backed by an incident log in `/data/incidents.json`.
+- `GET /healthz` — deep readiness covering refresh freshness, Docker, OpenAI sync freshness, and both Discord webhook configurations. `GET /livez` remains the process-only liveness endpoint.
 
 Set `MAINTENANCE_JSON` to an array of `{ start, end, reason }` ISO windows to pause alerts and show a maintenance banner during planned work. The agent ingest and heartbeat endpoints are rate limited per client IP.
 
 ## Deployment
 
 The Compose stack joins `dokploy-network` and uses Dokploy's existing Traefik middleware and Let's Encrypt resolver. It runs in `/home/ubuntu/apps/sky-status-dashboard` on the host.
+
+The application runs as UID/GID 1000 with all capabilities dropped, a read-only root filesystem, a writable `/data` volume, and a small temporary filesystem. Security headers include HSTS, CSP, frame denial, and a restrictive permissions policy.
 
 ## SkyLabMac agent
 

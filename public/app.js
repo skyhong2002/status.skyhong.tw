@@ -46,9 +46,12 @@ function slaSummary(target, data) {
   const history = historyFor(target.id, data.history);
   const day = history.uptime === null ? '—' : pct(history.uptime);
   const windows = (data.uptime || {})[target.id] || {};
-  const long = windows.d30?.uptime != null ? pct(windows.d30.uptime) : (windows.d7?.uptime != null ? pct(windows.d7.uptime) : null);
-  const value = long ? `${long} · 30d` : `${day} · 24h`;
-  const tip = `24h ${day} · 7d ${pct(windows.d7?.uptime)} · 30d ${pct(windows.d30?.uptime)} · 90d ${pct(windows.d90?.uptime)}`;
+  const preferred = windows.d30?.uptime != null ? windows.d30 : windows.d7;
+  const long = preferred?.uptime != null ? pct(preferred.uptime) : null;
+  const label = preferred?.complete ? `${preferred.windowDays}d` : `${preferred?.observedDays || 0}d observed`;
+  const value = long ? `${long} · ${label}` : `${day} · 24h`;
+  const windowTip = (window) => window?.uptime == null ? '—' : `${pct(window.uptime)} (${window.observedDays || 0}/${window.windowDays || 0}d observed)`;
+  const tip = `24h ${day} · 7d ${windowTip(windows.d7)} · 30d ${windowTip(windows.d30)} · 90d ${windowTip(windows.d90)}`;
   return { bars: history.bars, value, tip };
 }
 
@@ -109,10 +112,20 @@ function renderInfrastructure(data, remote) {
 
 function renderJobs(data) {
   const jobs = data.heartbeats || [];
-  $('jobs').hidden = jobs.length === 0;
-  if (!jobs.length) return;
+  const deliveries = Object.entries(data.alertDelivery || {}).map(([id, status]) => {
+    const success = Date.parse(status?.lastSuccessAt || '');
+    const failure = Date.parse(status?.lastFailureAt || '');
+    const up = Boolean(status?.configured && Number.isFinite(success) && (!Number.isFinite(failure) || success >= failure));
+    const detail = !status?.configured ? 'Webhook not configured'
+      : status.lastError ? `Last attempt failed · ${status.lastError}`
+        : status.lastSuccessAt ? `Verified ${new Date(status.lastSuccessAt).toLocaleString()}` : 'Delivery not verified';
+    return { id, name: id === 'incident' ? 'Incident alerts' : 'OpenAI usage alerts', kind: 'Discord webhook', up, detail };
+  });
+  $('jobs').hidden = jobs.length === 0 && deliveries.length === 0;
   $('jobs-list').innerHTML = jobs.map((job) => runtimeRow(job)).join('');
   $('jobs-total').textContent = `${jobs.filter((job) => job.up).length}/${jobs.length}`;
+  $('delivery-list').innerHTML = deliveries.length ? deliveries.map((delivery) => runtimeRow(delivery)).join('') : '<div class="empty">No alert delivery data.</div>';
+  $('delivery-total').textContent = `${deliveries.filter((delivery) => delivery.up).length}/${deliveries.length}`;
 }
 
 function renderAttention(data, remote, ai) {
@@ -128,6 +141,11 @@ function renderAttention(data, remote, ai) {
     ...(data.domains || []).filter((d) => d.ok && d.daysRemaining != null && d.daysRemaining <= domainWarn).map((d) => ({ name: `${d.domain} · domain registration`, detail: `Expires in ${d.daysRemaining} days` })),
     ...(ai && !ai.connected ? [{ name: ai.name, detail: ai.detail }] : []),
     ...(ai?.pools || []).filter((pool) => pool.percent >= 70).map((pool) => ({ name: pool.name, detail: `${pool.percent.toFixed(1)}% of estimated pool used` })),
+    ...Object.entries(data.alertDelivery || {}).filter(([, status]) => {
+      const success = Date.parse(status?.lastSuccessAt || '');
+      const failure = Date.parse(status?.lastFailureAt || '');
+      return !status?.configured || !Number.isFinite(success) || (Number.isFinite(failure) && failure > success);
+    }).map(([id, status]) => ({ name: `${id === 'incident' ? 'Incident' : 'OpenAI usage'} alert delivery`, detail: status?.lastError || (status?.configured ? 'Delivery has not been verified' : 'Webhook not configured') })),
   ];
   $('attention-section').hidden = issues.length === 0;
   $('attention-count').textContent = `${issues.length} active`;
@@ -192,7 +210,7 @@ function renderGlobal(data, remote, ai, issues) {
   }
   $('global-state').classList.remove('maintenance');
   $('global-state').classList.toggle('degraded', !healthy);
-  $('global-title').textContent = healthy ? 'All systems operational' : `${issues.length} ${issues.length === 1 ? 'system needs' : 'systems need'} attention`;
+  $('global-title').textContent = healthy ? 'All systems operational' : `${issues.length} ${issues.length === 1 ? 'item needs' : 'items need'} attention`;
   $('global-detail').textContent = healthy ? 'All monitored products and runtimes are responding normally.' : 'Current incidents and degraded checks are listed below.';
   $('state-time').textContent = new Date(data.checkedAt).toLocaleString();
   $('last-check').textContent = `Updated ${new Date(data.checkedAt).toLocaleTimeString()}`;
@@ -200,7 +218,7 @@ function renderGlobal(data, remote, ai, issues) {
   $('summary-docker').textContent = `${data.services.filter((item) => item.up).length} / ${data.services.length}`;
   $('summary-remote').textContent = `${remote.filter((item) => item.up).length} / ${remote.length}`;
   $('summary-ai').textContent = number(ai?.requests);
-  document.title = healthy ? 'All systems operational · Sky Status' : `${issues.length} ${issues.length === 1 ? 'incident' : 'incidents'} · Sky Status`;
+  document.title = healthy ? 'All systems operational · Sky Status' : `${issues.length} attention ${issues.length === 1 ? 'item' : 'items'} · Sky Status`;
 }
 
 async function load() {

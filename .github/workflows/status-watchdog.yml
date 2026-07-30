@@ -1,0 +1,97 @@
+name: External status watchdog
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: status-watchdog
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe deep health endpoint
+        id: probe
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if curl --fail --silent --show-error --max-time 20 https://status.skyhong.tw/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+
+      - name: Deduplicate incident and notify Discord
+        if: always()
+        uses: actions/github-script@v8
+        env:
+          PROBE_OK: ${{ steps.probe.outcome == 'success' }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.STATUS_DISCORD_WEBHOOK_URL }}
+        with:
+          script: |
+            const title = '[watchdog] status.skyhong.tw unavailable';
+            const { owner, repo } = context.repo;
+            const ok = process.env.PROBE_OK === 'true';
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            let issue = issues.find((item) => item.title === title);
+
+            async function discord(payload) {
+              const webhook = process.env.DISCORD_WEBHOOK_URL;
+              if (!webhook) throw new Error('STATUS_DISCORD_WEBHOOK_URL is not configured');
+              const response = await fetch(webhook, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(payload),
+              });
+              if (!response.ok) throw new Error(`Discord returned HTTP ${response.status}`);
+            }
+
+            if (!ok) {
+              if (!issue) {
+                const created = await github.rest.issues.create({
+                  owner, repo, title,
+                  body: `External deep-health checks failed three times.\n\nStarted: ${new Date().toISOString()}\nDiscord notified: no`,
+                });
+                issue = created.data;
+              }
+              if (!issue.body?.includes('Discord notified: yes')) {
+                await discord({ embeds: [{
+                  title: 'status.skyhong.tw external watchdog',
+                  description: '**DOWN** - the deep health endpoint failed three consecutive probes.',
+                  color: 0xE5484D,
+                  timestamp: new Date().toISOString(),
+                }] });
+                await github.rest.issues.update({
+                  owner, repo, issue_number: issue.number,
+                  body: `${issue.body || ''}`.replace('Discord notified: no', 'Discord notified: yes'),
+                });
+              }
+              core.setFailed('status.skyhong.tw deep health probe failed');
+              return;
+            }
+
+            if (issue) {
+              await discord({ embeds: [{
+                title: 'status.skyhong.tw external watchdog',
+                description: '**RECOVERED** - the deep health endpoint is responding normally.',
+                color: 0x30A46C,
+                timestamp: new Date().toISOString(),
+              }] });
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issue.number,
+                body: `Recovered at ${new Date().toISOString()}.`,
+              });
+              await github.rest.issues.update({ owner, repo, issue_number: issue.number, state: 'closed' });
+            }

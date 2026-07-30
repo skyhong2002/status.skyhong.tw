@@ -81,7 +81,9 @@ def http_probe(url, timeout=API_PROBE_TIMEOUT_SECONDS):
         with urllib.request.urlopen(url, timeout=timeout) as response:
             return True, f"Serving · HTTP {response.status}"
     except urllib.error.HTTPError as error:
-        return True, f"Serving · HTTP {error.code}"
+        code = error.code
+        error.close()
+        return True, f"Serving · HTTP {code}"
     except (urllib.error.URLError, OSError) as error:
         reason = getattr(error, "reason", error)
         return False, f"Not serving · {reason}"
@@ -137,9 +139,11 @@ def main():
     processes = command_output(["ps", "-axo", "pid=,args="])
     launchd = command_output(["launchctl", "list"])
     items = []
+    bamboo_status = None
     for watch_type, identifier, name, pattern in WATCHES:
         if watch_type == "cron":
-            items.append(bamboo_discord_status())
+            bamboo_status = bamboo_discord_status()
+            items.append(bamboo_status)
             continue
         if watch_type == "http":
             up, detail = http_probe(pattern)
@@ -165,6 +169,20 @@ def main():
     except (urllib.error.URLError, RuntimeError) as error:
         print(f"status-agent report failed: {error}", file=sys.stderr)
         return 1
+
+    if bamboo_status and bamboo_status["up"] and config.get("heartbeat_token"):
+        heartbeat = urllib.request.Request(
+            f"{config['endpoint'].rstrip('/')}/api/heartbeat/bamboo-discord-watcher",
+            headers={"Authorization": f"Bearer {config['heartbeat_token']}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(heartbeat, timeout=15) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"heartbeat returned {response.status}")
+        except (urllib.error.URLError, RuntimeError) as error:
+            print(f"status-agent heartbeat failed: {error}", file=sys.stderr)
+            return 1
     return 0
 
 

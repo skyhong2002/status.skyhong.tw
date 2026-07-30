@@ -72,10 +72,16 @@
 
       <section class="dashboard-section" id="jobs" hidden>
         <div class="section-heading"><div><span class="eyebrow">Dead-man's switch</span><h2>Background jobs</h2></div><span class="section-meta">Heartbeat freshness</span></div>
-        <article class="runtime-panel">
-          <div class="panel-heading"><div><span class="panel-kicker">Cron · n8n · scheduled</span><h3>Heartbeats</h3></div><strong id="jobs-total">-</strong></div>
-          <div class="runtime-list" id="jobs-list"></div>
-        </article>
+        <div class="infrastructure-grid">
+          <article class="runtime-panel">
+            <div class="panel-heading"><div><span class="panel-kicker">Cron · n8n · scheduled</span><h3>Heartbeats</h3></div><strong id="jobs-total">-</strong></div>
+            <div class="runtime-list" id="jobs-list"></div>
+          </article>
+          <article class="runtime-panel">
+            <div class="panel-heading"><div><span class="panel-kicker">Discord</span><h3>Alert delivery</h3></div><strong id="delivery-total">-</strong></div>
+            <div class="runtime-list" id="delivery-list"></div>
+          </article>
+        </div>
       </section>
 
       <section class="dashboard-section" id="certificates">

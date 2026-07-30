@@ -7,9 +7,12 @@
 set -euo pipefail
 
 ENDPOINT="${STATUS_ENDPOINT:-https://status.skyhong.tw}"
+ENV_FILE="${STATUS_ENV_FILE:-$(dirname "$0")/../.env}"
 if [ -z "${AGENT_INGEST_TOKEN:-}" ]; then
-  ENV_FILE="${STATUS_ENV_FILE:-$(dirname "$0")/../.env}"
   [ -f "$ENV_FILE" ] && AGENT_INGEST_TOKEN=$(grep -E '^AGENT_INGEST_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2-)
+fi
+if [ -z "${HEARTBEAT_TOKEN:-}" ] && [ -f "$ENV_FILE" ]; then
+  HEARTBEAT_TOKEN=$(grep -E '^HEARTBEAT_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2-)
 fi
 TOKEN="${AGENT_INGEST_TOKEN:?AGENT_INGEST_TOKEN required}"
 DISK_WARN="${DISK_WARN_PERCENT:-90}"
@@ -38,3 +41,8 @@ curl -fsS -X POST "${ENDPOINT%/}/api/agents/vps" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -d "$payload" > /dev/null
+
+if [ -n "${HEARTBEAT_TOKEN:-}" ]; then
+  curl -fsS -X POST "${ENDPOINT%/}/api/heartbeat/vps-host-reporter" \
+    -H "Authorization: Bearer $HEARTBEAT_TOKEN" > /dev/null
+fi

@@ -116,7 +116,14 @@ export async function createUsageMonitor(options = {}) {
     CREATE TABLE IF NOT EXISTS alert_log (
       alert_key TEXT PRIMARY KEY, sent_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS alert_delivery (
+      channel TEXT PRIMARY KEY, configured INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at INTEGER, last_success_at INTEGER, last_failure_at INTEGER,
+      last_error TEXT
+    );
   `);
+  db.prepare(`INSERT INTO alert_delivery (channel, configured) VALUES ('usage', ?)
+    ON CONFLICT(channel) DO UPDATE SET configured=excluded.configured`).run(webhookUrl ? 1 : 0);
 
   const upsertUsage = db.prepare(`
     INSERT INTO usage_snapshots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -132,6 +139,29 @@ export async function createUsageMonitor(options = {}) {
   `);
   let lastSyncAt = null;
   let lastError = null;
+
+  function alertDeliverySummary() {
+    const row = db.prepare('SELECT * FROM alert_delivery WHERE channel=?').get('usage');
+    const iso = (value) => value ? new Date(value * 1000).toISOString() : null;
+    return {
+      configured: Boolean(row?.configured),
+      lastAttemptAt: iso(row?.last_attempt_at),
+      lastSuccessAt: iso(row?.last_success_at),
+      lastFailureAt: iso(row?.last_failure_at),
+      lastError: row?.last_error || null,
+    };
+  }
+
+  function recordAlertDelivery(ok, error = null) {
+    const now = Math.floor(Date.now() / 1000);
+    if (ok) {
+      db.prepare(`UPDATE alert_delivery SET configured=1, last_attempt_at=?, last_success_at=?, last_error=NULL
+        WHERE channel='usage'`).run(now, now);
+    } else {
+      db.prepare(`UPDATE alert_delivery SET configured=?, last_attempt_at=?, last_failure_at=?, last_error=?
+        WHERE channel='usage'`).run(webhookUrl ? 1 : 0, now, now, String(error || 'Unknown delivery error').slice(0, 240));
+    }
+  }
 
   function poolFor(model, serviceTier) {
     return poolForUsage(model, serviceTier, highModels, miniModels);
@@ -175,7 +205,30 @@ export async function createUsageMonitor(options = {}) {
       pools, byModel, byKey, byProject, byTier, trend, timeZone, lastSyncAt,
       dayRemaining, dayRemainingHours: dayRemaining * 24,
       possibleBillable: byModel.filter((row) => row.pool === 'billable'),
+      alertDelivery: alertDeliverySummary(),
     };
+  }
+
+  async function sendUsageWebhook(content) {
+    if (!webhookUrl) return false;
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
+        body: JSON.stringify({ content }),
+      });
+      if (response.ok || response.status === 204) {
+        recordAlertDelivery(true);
+        return true;
+      }
+      const error = `Discord webhook returned HTTP ${response.status}`;
+      recordAlertDelivery(false, error);
+      console.error(`usage webhook delivery failed: ${error}`);
+    } catch (error) {
+      const detail = String(error?.message || error);
+      recordAlertDelivery(false, detail);
+      console.error(`usage webhook delivery failed: ${detail}`);
+    }
+    return false;
   }
 
   async function sendAlerts() {
@@ -187,11 +240,8 @@ export async function createUsageMonitor(options = {}) {
         if (pool.percent < threshold) continue;
         const alertKey = `${day}:${pool.id}:${threshold}`;
         if (db.prepare('SELECT 1 FROM alert_log WHERE alert_key=?').get(alertKey)) continue;
-        const response = await fetch(webhookUrl, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
-          body: JSON.stringify({ content: `OpenAI estimated free pool alert: ${pool.name} is ${pool.percent.toFixed(1)}% used (${pool.used.toLocaleString()} / ${pool.limit.toLocaleString()} tokens).` }),
-        });
-        if (response.ok) db.prepare('INSERT INTO alert_log VALUES (?, ?)').run(alertKey, Math.floor(Date.now() / 1000));
+        const delivered = await sendUsageWebhook(`OpenAI estimated free pool alert: ${pool.name} is ${pool.percent.toFixed(1)}% used (${pool.used.toLocaleString()} / ${pool.limit.toLocaleString()} tokens).`);
+        if (delivered) db.prepare('INSERT INTO alert_log VALUES (?, ?)').run(alertKey, Math.floor(Date.now() / 1000));
       }
     }
   }
@@ -232,7 +282,12 @@ export async function createUsageMonitor(options = {}) {
     }
   }
 
-  return { sync, summary };
+  async function testAlert() {
+    if (!webhookUrl) return false;
+    return sendUsageWebhook('OpenAI usage webhook health check: threshold alerts are configured and reachable.');
+  }
+
+  return { sync, summary, testAlert };
 }
 
 export { dayRemainingFraction, jsonEnv, matchesModel, poolForUsage, zonedDayStart };

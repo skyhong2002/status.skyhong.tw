@@ -35,8 +35,16 @@ export async function createAlerter(options = {}) {
   const maxIncidents = Math.max(1, Number(options.maxIncidents ?? 200));
   const file = join(dataDir, 'alerts.json');
   const incidentsFile = join(dataDir, 'incidents.json');
+  const deliveryFile = join(dataDir, 'alert-delivery.json');
   let state = {};
   let incidents = [];
+  let delivery = {
+    configured: Boolean(webhookUrl || options.send),
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    lastFailureAt: null,
+    lastError: null,
+  };
   try {
     const loaded = JSON.parse(await readFile(file, 'utf8'));
     if (loaded && typeof loaded === 'object' && !Array.isArray(loaded)) state = loaded;
@@ -45,6 +53,11 @@ export async function createAlerter(options = {}) {
     const loaded = JSON.parse(await readFile(incidentsFile, 'utf8'));
     if (Array.isArray(loaded)) incidents = loaded.slice(0, maxIncidents);
   } catch {}
+  try {
+    const loaded = JSON.parse(await readFile(deliveryFile, 'utf8'));
+    if (loaded && typeof loaded === 'object' && !Array.isArray(loaded)) delivery = { ...delivery, ...loaded };
+  } catch {}
+  delivery.configured = Boolean(webhookUrl || options.send);
 
   async function writeAtomic(target, value) {
     await mkdir(dataDir, { recursive: true });
@@ -60,6 +73,31 @@ export async function createAlerter(options = {}) {
     incidents.unshift(event);
     incidents = incidents.slice(0, maxIncidents);
     return writeAtomic(incidentsFile, incidents).catch(() => {});
+  }
+
+  async function attemptDelivery(payload) {
+    const attemptedAt = new Date().toISOString();
+    delivery.lastAttemptAt = attemptedAt;
+    let ok = false;
+    let error = null;
+    try {
+      ok = Boolean(await send(payload));
+      if (!ok) error = 'Discord webhook returned an unsuccessful response';
+    } catch (caught) {
+      error = String(caught?.message || caught).slice(0, 240);
+    }
+    if (ok) {
+      delivery.lastSuccessAt = attemptedAt;
+      delivery.lastError = null;
+    } else {
+      delivery.lastFailureAt = attemptedAt;
+      delivery.lastError = error;
+      console.error(`incident webhook delivery failed: ${error}`);
+    }
+    await writeAtomic(deliveryFile, delivery).catch((caught) => {
+      console.error(`incident delivery telemetry write failed: ${caught?.message || caught}`);
+    });
+    return ok;
   }
 
   async function evaluate(items) {
@@ -80,7 +118,7 @@ export async function createAlerter(options = {}) {
             timestamp,
           }] };
           try {
-            if (await send(payload)) {
+            if (await attemptDelivery(payload)) {
               record.alerted = false;
               record.downSince = null;
               await logIncident({ at: timestamp, id: item.id, name: item.name, type: 'recovery', detail: `Recovered after ${downFor}` });
@@ -98,7 +136,7 @@ export async function createAlerter(options = {}) {
             timestamp: new Date(now).toISOString(),
           }] };
           try {
-            if (await send(payload)) {
+            if (await attemptDelivery(payload)) {
               record.alerted = true;
               record.downSince = now;
               await logIncident({ at: new Date(now).toISOString(), id: item.id, name: item.name, type: 'down', detail: item.detail || 'No detail' });
@@ -115,5 +153,15 @@ export async function createAlerter(options = {}) {
     return incidents.slice(0, Math.max(0, limit));
   }
 
-  return { evaluate, recentIncidents };
+  async function testDelivery() {
+    if (!delivery.configured) return false;
+    return attemptDelivery({ embeds: [{
+      title: 'Status webhook health check',
+      description: 'Incident delivery is configured and reachable.',
+      color: 0x30A46C,
+      timestamp: new Date().toISOString(),
+    }] });
+  }
+
+  return { evaluate, recentIncidents, testDelivery, deliveryStatus: () => ({ ...delivery }) };
 }

@@ -52,6 +52,17 @@ export function renderMetrics(state) {
     }
   }
   gauge('sky_uptime_ratio', 'Uptime ratio over a rolling window (0-1)', uptimeRows);
+  const deliveryRows = Object.entries(state.alertDelivery || {}).map(([channel, status]) => [
+    `channel="${escapeLabel(channel)}"`, status?.configured ? 1 : 0,
+  ]);
+  const deliveryHealthyRows = Object.entries(state.alertDelivery || {}).map(([channel, status]) => {
+    const success = Date.parse(status?.lastSuccessAt || '');
+    const failure = Date.parse(status?.lastFailureAt || '');
+    const healthy = status?.configured && Number.isFinite(success) && (!Number.isFinite(failure) || success >= failure);
+    return [`channel="${escapeLabel(channel)}"`, healthy ? 1 : 0];
+  });
+  gauge('sky_alert_webhook_configured', 'Whether a Discord alert webhook is configured', deliveryRows);
+  gauge('sky_alert_delivery_healthy', 'Whether the latest attempted Discord alert delivery succeeded', deliveryHealthyRows);
   gauge('sky_incidents_total', 'Current number of active incidents', [['', countIncidents(state, state.thresholds)]]);
   return `${lines.join('\n')}\n`;
 }
