@@ -10,10 +10,12 @@ CONTAINER="${STATUS_CONTAINER:-sky-status-dashboard-status-dashboard-1}"
 ENDPOINT="${STATUS_ENDPOINT:-https://status.skyhong.tw}"
 RETENTION_DAYS="${STATUS_BACKUP_RETENTION_DAYS:-14}"
 
-if [ -z "${HEARTBEAT_TOKEN:-}" ] && [ -f "$ENV_FILE" ]; then
+if [ "${STATUS_BACKUP_SKIP_HEARTBEAT:-0}" != "1" ] && [ -z "${HEARTBEAT_TOKEN:-}" ] && [ -f "$ENV_FILE" ]; then
   HEARTBEAT_TOKEN=$(grep -E '^HEARTBEAT_TOKEN=' "$ENV_FILE" | head -1 | cut -d= -f2-)
 fi
-: "${HEARTBEAT_TOKEN:?HEARTBEAT_TOKEN required}"
+if [ "${STATUS_BACKUP_SKIP_HEARTBEAT:-0}" != "1" ]; then
+  : "${HEARTBEAT_TOKEN:?HEARTBEAT_TOKEN required}"
+fi
 
 mkdir -p "$BACKUP_ROOT"
 work_dir=$(mktemp -d)
@@ -52,7 +54,9 @@ tar -C "$work_dir" -czf "$archive_tmp" .
 mv "$archive_tmp" "$archive"
 find "$BACKUP_ROOT" -type f -name 'status-*.tar.gz' -mtime "+$RETENTION_DAYS" -delete
 
-curl -fsS -X POST "${ENDPOINT%/}/api/heartbeat/status-data-backup" \
-  -H "Authorization: Bearer $HEARTBEAT_TOKEN" >/dev/null
+if [ "${STATUS_BACKUP_SKIP_HEARTBEAT:-0}" != "1" ]; then
+  curl -fsS -X POST "${ENDPOINT%/}/api/heartbeat/status-data-backup" \
+    -H "Authorization: Bearer $HEARTBEAT_TOKEN" >/dev/null
+fi
 
 echo "status backup complete: $archive"
