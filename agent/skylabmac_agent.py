@@ -29,6 +29,27 @@ WATCHES = [
     ("cron", "bamboo-discord", "Bamboo Discord watcher", None),
     ("process", "token-tracker", "TokenTrackerBar", "tracker.js serve --port 7680"),
     ("process", "nycu-haix-runner", "NYCU-HAIX runner", "actions.runner.nycu-haix-omniobserve.sky-mac-mini"),
+    # RSSHub runs in Docker under Colima, so this probe also proves the Docker VM is up.
+    ("http", "bamboo-rsshub", "Bamboo RSSHub", "http://127.0.0.1:1200/healthz"),
+    ("http", "ollama", "Ollama API", "http://127.0.0.1:11434/api/version"),
+    ("http", "cliproxyapi", "CLIProxyAPI", "http://127.0.0.1:8317/"),
+    ("launchd", "claude-rc-localplaud", "Claude remote-control · localplaud", "com.gwenyth.claude-remote-control.localplaud"),
+    ("launchd", "claude-rc-youtube-board", "Claude remote-control · youtube-board", "com.gwenyth.claude-remote-control.youtube-board"),
+    ("launchd", "website-agent", "Harmonica website agent", "club.nycu.harmonica.website-agent"),
+    ("launchd", "website-hermes", "Harmonica website gateway", "club.nycu.harmonica.website-hermes"),
+    ("launchd", "hermes-dashboard", "Hermes dashboard UI", "local.hermes.dashboard-ui"),
+    ("launchd", "chumei-bot-line", "Chumei LINE bot", "tw.observe.chumei.bot-line"),
+    ("launchd", "chumei-bot-telegram", "Chumei Telegram bot", "tw.observe.chumei.bot-telegram"),
+    ("launchd", "chumei-mcp", "Chumei MCP server", "tw.observe.chumei.mcp"),
+    ("launchd", "chumei-push", "Chumei push server", "tw.observe.chumei.push"),
+    ("launchd-job", "chumei-pipeline", "Chumei pipeline", "tw.observe.chumei.pipeline"),
+    ("launchd-job", "chumei-push-drip", "Chumei push drip", "tw.observe.chumei.push-drip"),
+    ("launchd-job", "chumei-telegram-publish", "Chumei Telegram publisher", "tw.observe.chumei.telegram"),
+    ("launchd-job", "harmonica-pipeline", "Harmonica pipeline", "tw.observe.harmonica.pipeline"),
+    ("launchd-job", "harmonica-social-fast", "Harmonica social-fast", "tw.observe.harmonica.social-fast"),
+    ("launchd-job", "harmonica-submission-intake", "Harmonica submission intake", "tw.observe.harmonica.submission-intake"),
+    ("launchd-job", "harmonica-calendar", "Harmonica calendar sync", "tw.observe.harmonica.calendar-maintenance"),
+    ("launchd-job", "mayor2026-pipeline", "Mayor2026 pipeline", "tw.observe.mayor2026.pipeline"),
 ]
 
 
@@ -89,6 +110,40 @@ def http_probe(url, timeout=API_PROBE_TIMEOUT_SECONDS):
         return False, f"Not serving · {reason}"
 
 
+def parse_launchctl(listing):
+    """Map launchd label -> (pid or None, last exit status or None)."""
+    jobs = {}
+    for line in listing.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3 or parts[2] == "Label":
+            continue
+        pid_text, status_text, label = parts
+        pid = int(pid_text) if pid_text.strip().lstrip("-").isdigit() and pid_text.strip() != "-" else None
+        try:
+            status = int(status_text)
+        except ValueError:
+            status = None
+        jobs[label.strip()] = (pid, status)
+    return jobs
+
+
+def launchd_status(label, jobs, scheduled=False):
+    """A KeepAlive daemon must be running; a scheduled job is healthy while idle
+    as long as its last run exited cleanly."""
+    if label not in jobs:
+        return False, "Not loaded in launchd"
+    pid, status = jobs[label]
+    if pid is not None:
+        return True, f"Running · PID {pid}"
+    if status is not None and status < 0:
+        return False, f"Killed by signal {-status}"
+    if status not in (0, None):
+        return False, f"Last run exited {status}"
+    if scheduled:
+        return True, "Scheduled · last run ok"
+    return False, "Loaded but not running"
+
+
 def bamboo_discord_status(cron_path=BAMBOO_CRON_PATH, state_path=BAMBOO_WATCHER_STATE_PATH, now=None):
     now = now or datetime.now(timezone.utc)
     try:
@@ -138,6 +193,7 @@ def main():
 
     processes = command_output(["ps", "-axo", "pid=,args="])
     launchd = command_output(["launchctl", "list"])
+    launchd_jobs = parse_launchctl(launchd)
     items = []
     bamboo_status = None
     for watch_type, identifier, name, pattern in WATCHES:
@@ -148,6 +204,12 @@ def main():
         if watch_type == "http":
             up, detail = http_probe(pattern)
             items.append({"id": identifier, "name": name, "kind": "HTTP endpoint", "up": up, "detail": detail})
+            continue
+        if watch_type in ("launchd", "launchd-job"):
+            scheduled = watch_type == "launchd-job"
+            up, detail = launchd_status(pattern, launchd_jobs, scheduled=scheduled)
+            kind = "Scheduled job" if scheduled else "LaunchAgent"
+            items.append({"id": identifier, "name": name, "kind": kind, "up": up, "detail": detail})
             continue
         present = pattern in processes or pattern in launchd
         detail = "Process detected" if pattern in processes else ("LaunchAgent loaded" if pattern in launchd else "Process not found")
