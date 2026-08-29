@@ -17,22 +17,26 @@ fi
 TOKEN="${AGENT_INGEST_TOKEN:?AGENT_INGEST_TOKEN required}"
 DISK_WARN="${DISK_WARN_PERCENT:-90}"
 MEM_WARN="${MEM_WARN_PERCENT:-92}"
+LOAD_WARN_PER_CORE="${LOAD_WARN_PER_CORE:-2}"
 
 read -r disk_pct disk_used disk_total < <(df -Ph / | awk 'NR==2{gsub("%","",$5); print $5, $3, $2}')
 read -r mem_pct mem_used mem_total < <(free -m | awk '/Mem:/{printf "%d %d %d\n", $3*100/$2, $3, $2}')
-load1=$(awk '{print $1}' /proc/loadavg)
+read -r load1 load5 _ < /proc/loadavg
 cores=$(nproc)
 
 bool() { [ "$1" -lt "$2" ] && echo true || echo false; }
 disk_up=$(bool "$disk_pct" "$DISK_WARN")
 mem_up=$(bool "$mem_pct" "$MEM_WARN")
-load_up=$(awk -v l="$load1" -v c="$cores" 'BEGIN{print (l < c*2) ? "true" : "false"}')
+# A one-minute spike is normal on a small VPS. Alert only when both the 1m and
+# 5m averages exceed the per-core threshold, which represents sustained queueing.
+load_up=$(awk -v l1="$load1" -v l5="$load5" -v c="$cores" -v m="$LOAD_WARN_PER_CORE" \
+  'BEGIN{print (l1 < c*m || l5 < c*m) ? "true" : "false"}')
 
 payload=$(cat <<JSON
 {"host":"$(hostname)","items":[
  {"id":"disk-root","name":"Disk /","kind":"Host metric","up":$disk_up,"detail":"${disk_pct}% used · ${disk_used}/${disk_total}"},
  {"id":"memory","name":"Memory","kind":"Host metric","up":$mem_up,"detail":"${mem_pct}% used · ${mem_used}/${mem_total} MB"},
- {"id":"load","name":"Load average","kind":"Host metric","up":$load_up,"detail":"${load1} over ${cores} cores"}
+ {"id":"load","name":"Load average","kind":"Host metric","up":$load_up,"detail":"1m ${load1} · 5m ${load5} over ${cores} cores"}
 ]}
 JSON
 )

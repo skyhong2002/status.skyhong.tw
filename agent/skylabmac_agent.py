@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 CONFIG_PATH = os.path.expanduser("~/.config/sky-status-agent.json")
+LAUNCHD_JOB_STATE_PATH = Path(os.path.expanduser("~/.config/sky-status-launchd-jobs.json"))
 BAMBOO_CRON_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/cron/jobs.json")
 BAMBOO_WATCHER_STATE_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/state/discord-watcher/state.json")
 WATCHER_MAX_AGE_SECONDS = 20 * 60
@@ -126,13 +127,33 @@ def parse_launchctl(listing):
     return jobs
 
 
-def launchd_status(label, jobs, scheduled=False):
+def load_launchd_job_state(path=LAUNCHD_JOB_STATE_PATH):
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return {str(label): status for label, status in loaded.items() if isinstance(status, int)}
+
+
+def save_launchd_job_state(state, path=LAUNCHD_JOB_STATE_PATH):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+
+
+def launchd_status(label, jobs, scheduled=False, previous_status=None):
     """A KeepAlive daemon must be running; a scheduled job is healthy while idle
     as long as its last run exited cleanly."""
     if label not in jobs:
         return False, "Not loaded in launchd"
     pid, status = jobs[label]
     if pid is not None:
+        if scheduled and previous_status not in (0, None):
+            return False, f"Retry running · previous exit {previous_status}"
         return True, f"Running · PID {pid}"
     if status is not None and status < 0:
         return False, f"Killed by signal {-status}"
@@ -193,6 +214,7 @@ def main():
     processes = command_output(["ps", "-axo", "pid=,args="])
     launchd = command_output(["launchctl", "list"])
     launchd_jobs = parse_launchctl(launchd)
+    launchd_job_state = load_launchd_job_state()
     items = []
     bamboo_status = None
     for watch_type, identifier, name, pattern in WATCHES:
@@ -206,7 +228,16 @@ def main():
             continue
         if watch_type in ("launchd", "launchd-job"):
             scheduled = watch_type == "launchd-job"
-            up, detail = launchd_status(pattern, launchd_jobs, scheduled=scheduled)
+            pid, status = launchd_jobs.get(pattern, (None, None))
+            previous_status = launchd_job_state.get(pattern)
+            if scheduled and pid is None and status is not None:
+                launchd_job_state[pattern] = status
+            up, detail = launchd_status(
+                pattern,
+                launchd_jobs,
+                scheduled=scheduled,
+                previous_status=previous_status,
+            )
             kind = "Scheduled job" if scheduled else "LaunchAgent"
             items.append({"id": identifier, "name": name, "kind": kind, "up": up, "detail": detail})
             continue
@@ -215,6 +246,7 @@ def main():
         items.append({"id": identifier, "name": name, "kind": "Process", "up": present, "detail": detail})
 
     items.extend(host_metrics())
+    save_launchd_job_state(launchd_job_state)
 
     body = json.dumps({"host": socket.gethostname(), "items": items}).encode("utf-8")
     request = urllib.request.Request(

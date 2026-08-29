@@ -8,7 +8,13 @@ from pathlib import Path
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from skylabmac_agent import bamboo_discord_status, http_probe
+from skylabmac_agent import (
+    bamboo_discord_status,
+    http_probe,
+    launchd_status,
+    load_launchd_job_state,
+    save_launchd_job_state,
+)
 
 
 class BambooDiscordStatusTest(unittest.TestCase):
@@ -86,6 +92,35 @@ class HttpProbeTest(unittest.TestCase):
         up, detail = http_probe("http://127.0.0.1:1/healthz", timeout=1)
         self.assertFalse(up)
         self.assertIn("Not serving", detail)
+
+
+class LaunchdStatusTest(unittest.TestCase):
+    def test_failed_scheduled_job_stays_down_while_retry_runs(self):
+        up, detail = launchd_status(
+            "example.job",
+            {"example.job": (1234, None)},
+            scheduled=True,
+            previous_status=1,
+        )
+        self.assertFalse(up)
+        self.assertEqual(detail, "Retry running · previous exit 1")
+
+    def test_successful_scheduled_job_can_report_running(self):
+        up, detail = launchd_status(
+            "example.job",
+            {"example.job": (1234, None)},
+            scheduled=True,
+            previous_status=0,
+        )
+        self.assertTrue(up)
+        self.assertEqual(detail, "Running · PID 1234")
+
+    def test_launchd_job_state_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            save_launchd_job_state({"example.job": 1}, path)
+            self.assertEqual(load_launchd_job_state(path), {"example.job": 1})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":
