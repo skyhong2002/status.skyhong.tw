@@ -32,7 +32,6 @@ WATCHES = [
     # RSSHub runs in Docker under Colima, so this probe also proves the Docker VM is up.
     ("http", "bamboo-rsshub", "Bamboo RSSHub", "http://127.0.0.1:1200/healthz"),
     ("http", "ollama", "Ollama API", "http://127.0.0.1:11434/api/version"),
-    ("http", "cliproxyapi", "CLIProxyAPI", "http://127.0.0.1:8317/"),
     ("launchd", "claude-rc-localplaud", "Claude remote-control · localplaud", "com.gwenyth.claude-remote-control.localplaud"),
     ("launchd", "claude-rc-youtube-board", "Claude remote-control · youtube-board", "com.gwenyth.claude-remote-control.youtube-board"),
     ("launchd", "website-agent", "Harmonica website agent", "club.nycu.harmonica.website-agent"),
