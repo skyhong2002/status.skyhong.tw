@@ -54,7 +54,6 @@ WATCHES = [
     ("launchd-job", "harmonica-submission-intake", "Harmonica submission intake", "tw.observe.harmonica.submission-intake"),
     ("launchd-job", "harmonica-calendar", "Harmonica calendar sync", "tw.observe.harmonica.calendar-maintenance"),
     ("launchd-job", "harmonica-rsshub-ig-probe", "Harmonica RSSHub IG probe", "tw.observe.harmonica.rsshub-ig-probe"),
-    ("launchd-job", "urtube-backup", "URtube backup", "tw.observe.urtube.backup"),
     ("launchd-job", "mayor2026-pipeline", "Mayor2026 pipeline", "tw.observe.mayor2026.pipeline"),
 ]
 
