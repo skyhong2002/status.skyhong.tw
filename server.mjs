@@ -52,7 +52,9 @@ const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
   { id: 'plaud-skyhong', name: 'plaud.observe.tw', group: 'Products', url: 'https://plaud.observe.tw', checkUrl: 'https://plaud.observe.tw/healthz', keyword: '"status":"ok"' },
   { id: 'mayor2026-observe', name: 'mayor2026.observe.tw', group: 'Products', url: 'https://mayor2026.observe.tw', keyword: '2026 市長' },
   { id: 'infovore', name: 'Infovore', group: 'Products', url: 'https://infovore.skyhong.tw', keyword: 'infovore', latencyThresholdMs: 5000 },
+  { id: 'urtube-observe', name: 'urtube.observe.tw', group: 'Products', url: 'https://urtube.observe.tw', checkUrl: 'https://urtube.observe.tw/healthz', keyword: '"status":"healthy"' },
   { id: 'n8n', name: 'n8n automations', group: 'Operations', url: 'https://n8n.skyhong.tw', checkUrl: 'https://n8n.skyhong.tw/healthz/readiness', keyword: '"status":"ok"' },
+  { id: 'urtube-jobs', name: 'URtube worker & backup', group: 'Operations', url: 'https://urtube.observe.tw', checkUrl: 'https://urtube.observe.tw/readyz', keyword: '"status":"ready"' },
   { id: 'freshrss', name: 'FreshRSS', group: 'Operations', url: 'https://rss.skyhong.tw', keyword: 'FreshRSS' },
 ]);
 const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], alertDelivery: {}, errors: [], history: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
