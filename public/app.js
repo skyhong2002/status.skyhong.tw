@@ -56,7 +56,7 @@ function slaSummary(target, data) {
 }
 
 function renderProducts(data) {
-  $('product-list').innerHTML = data.targets.map((target) => {
+  const renderRows = (targets) => targets.map((target) => {
     const sla = slaSummary(target, data);
     const label = statusLabel(target);
     const sub = target.degraded && target.degradedReason
@@ -71,6 +71,9 @@ function renderProducts(data) {
       <div class="uptime-row"><div class="uptime-bars" aria-label="24 hour status history">${sla.bars.map((status) => `<i class="${status}" title="${status}"></i>`).join('')}</div><span class="uptime-value" title="${esc(sla.tip)}">${sla.value}</span></div>
     </article>`;
   }).join('');
+  const isOmni = (target) => target.id.startsWith('omni-');
+  $('product-list').innerHTML = renderRows(data.targets.filter((target) => !isOmni(target)));
+  $('omni-list').innerHTML = renderRows(data.targets.filter(isOmni));
 }
 
 function expiryRow(name, sub, days, known, warnDays) {
