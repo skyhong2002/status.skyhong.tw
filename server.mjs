@@ -1,3 +1,4 @@
+import { fetchThroughSocket } from './tunnel-probe.mjs';
 import { remoteProbe } from './remote-probe.mjs';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
@@ -99,7 +100,7 @@ async function checkTarget(target) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), target.timeoutMs || 12_000);
   try {
-    const response = await fetch(checkUrl, { method: 'GET', redirect: 'follow', signal: controller.signal });
+    const response = target.probeSocket ? await fetchThroughSocket(checkUrl, target.probeSocket, controller.signal) : await fetch(checkUrl, { method: 'GET', redirect: 'follow', signal: controller.signal });
     const accepted = target.acceptedStatuses || [];
     let up = accepted.length ? accepted.includes(response.status) : response.status >= 200 && response.status < 400;
     let detail = response.statusText || 'Reachable';
@@ -118,7 +119,7 @@ async function checkTarget(target) {
       degraded = true;
       degradedReason = `Slow: ${latencyMs}ms > ${target.latencyThresholdMs}ms`;
     }
-    return { ...target, up, statusCode: response.status, latencyMs, detail, degraded, degradedReason };
+    return { ...target, probeSource: target.probeSocket ? 'skyhong.tw via private SSH' : 'skyhong.tw', up, statusCode: response.status, latencyMs, detail, degraded, degradedReason };
   } catch (error) {
     let detail = error.name === 'AbortError' ? 'Timed out' : 'Unreachable';
     try {
@@ -236,7 +237,7 @@ async function refresh() {
   state.checkedAt = new Date().toISOString();
   state.targets = checkedTargets;
   const omniMain = targets.find((target) => target.id === 'omni-main-web');
-  state.omniNetworkPath = omniMain ? await checkTarget({ ...omniMain, probeAgent: null }) : null;
+  state.omniNetworkPath = omniMain ? await checkTarget({ ...omniMain, probeAgent: null, probeSocket: null }) : null;
   state.services = services;
   state.aiUsage = aiUsage;
   state.errors = errors;
@@ -247,7 +248,7 @@ async function refresh() {
   try { uptimeStore.record(historyItems); state.uptime = uptimeStore.summary(historyItems.map((item) => item.id)); } catch {}
   const alertItems = [
     ...checkedTargets.map((t) => ({ id: `target:${t.id}`, name: t.name, up: t.up, detail: t.statusCode ? `HTTP ${t.statusCode} · ${t.detail}` : t.detail })),
-    ...(state.omniNetworkPath ? [{id: 'omni-monitor-path', name: 'skyhong.tw to OmniObserve network path', up: state.omniNetworkPath.up, detail: state.omniNetworkPath.detail}] : []),
+    ...(state.omniNetworkPath ? [{id: 'omni-monitor-path', name: 'OmniObserve monitoring transport', up: checkedTargets.filter((t) => t.id.startsWith('omni-')).every((t) => t.up), detail: 'Active monitor transport: private SSH tunnel'}] : []),
     ...services.map((s) => ({ id: `runtime:${s.name}`, name: s.name, up: s.up, detail: s.detail })),
     ...remoteItems().map((r) => ({ id: `remote:${r.id}`, name: r.name, up: r.up, detail: r.detail })),
     ...heartbeatItems.map((h) => ({ id: `heartbeat:${h.id}`, name: `${h.name} · heartbeat`, up: h.up, detail: h.detail })),

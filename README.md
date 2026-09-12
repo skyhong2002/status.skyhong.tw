@@ -77,18 +77,34 @@ The application runs as UID/GID 1000 with all capabilities dropped, a read-only 
 
 Standalone Docker containers are additionally inspected for restart count and OOM-kills, so a crash-looping or out-of-memory container is reported as down instead of appearing to run.
 
-## OmniObserve probe source
+## OmniObserve private monitoring tunnel
 
-OmniObserve targets use the `omni-probe` agent on SkyLabMac, which probes the
-public HTTPS URLs every 60 seconds. This works around the observed path failure
-from skyhong.tw to IIC (no inbound packets reached the VM). Results older than
-180 seconds, missing results, and non-200 responses fail closed.
+The IIC VM initiates an SSH connection to skyhong.tw:22. It exposes only a Unix
+socket at /var/lib/omni-monitor-tunnel/socket/origin.sock on skyhong.tw, forwarding
+to the VM's own 127.0.0.1:443. No new public TCP port is opened. The dashboard
+bind-mounts the directory (not the socket inode) and joins group 986 to connect.
+HTTPS requests preserve the original hostname/SNI and validate certificates.
 
-The direct skyhong.tw path remains separately checked and alerted as
-`omni-monitor-path`; it is not counted as an application outage. The compact
-OmniObserve section labels its source and discloses this path issue in details.
+The dedicated key only authenticates from 140.110.146.224. SSH shell/exec/SFTP,
+PTY, agent/X11 forwarding and TUN are disabled. Remote Unix forwarding is enabled.
+In this OpenSSH version AllowTcpForwarding=no also prevents the Unix listener
+through a shared permission check. Therefore the configuration enables remote
+forwarding but uses PermitListen=none to deny all TCP listener requests; live
+negative tests verified command and TCP forwarding requests fail. See
+https://github.com/openssh/openssh-portable/blob/V_9_6_P1/session.c and channels.c.
 
-Agent source: `agent/omni_http_agent.py`, public target list: `agent/omni-targets.json`.
-On SkyLabMac, launchd job `tw.skyhong.omni-http-probe` runs every 60 seconds and
-reads the pre-existing `~/.config/sky-status-agent.json` token configuration.
-The original SkyLabMac process agent is unchanged.
+The client pins the server host key, runs without privileges and uses keepalives,
+ExitOnForwardFailure and Docker restart. The socket is mode 0660, in a private
+directory. A forced SSH disconnect recovered automatically in 4.7 seconds;
+wrong-certificate requests failed validation and all 14 endpoints returned 200.
+
+IIC Dokploy Compose: 7B7WV1k8Z5_5PRhTLL-2c (omni-monitor-tunnel-lkblfa).
+Public recovery templates are under infra/omni-tunnel/. Supply the private key
+through TUNNEL_PRIVATE_KEY_B64 in Dokploy; never commit key material.
+
+The status page explicitly labels the source as skyhong.tw via private SSH.
+Direct public routing from skyhong.tw to IIC is still tested and disclosed in
+expanded details, but is not an active incident when the selected monitoring
+transport is healthy. This verifies origin health, not global public reachability.
+The temporary SkyLabMac HTTP probe is disabled; its ordinary process agent remains.
+The retired standalone uptime containers are removed, with their data volume retained.

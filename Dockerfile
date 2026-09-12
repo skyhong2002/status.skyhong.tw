@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json ./
 COPY server.mjs ./
 COPY remote-probe.mjs ./
+COPY tunnel-probe.mjs ./
 COPY alerts.mjs ./
 COPY probes.mjs ./
 COPY heartbeats.mjs ./

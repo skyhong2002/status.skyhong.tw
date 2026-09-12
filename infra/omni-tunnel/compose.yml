@@ -1,0 +1,56 @@
+configs:
+  known:
+    content: '217.142.232.200 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC46nrL8ykS1vR3rhrS+DyFZRk0yxk/7cWNTWkrGXjRP
+
+      '
+  start:
+    content: 'set -eu
+
+      umask 077
+
+      printf ''%s'' "$$TUNNEL_PRIVATE_KEY_B64" | base64 -d > /run/tunnel/key
+
+      exec ssh -N -T -i /run/tunnel/key -o BatchMode=yes -o StrictHostKeyChecking=yes
+      -o UserKnownHostsFile=/app/known_hosts -o ExitOnForwardFailure=yes -o ConnectTimeout=10
+      -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -R /var/lib/omni-monitor-tunnel/socket/origin.sock:127.0.0.1:443
+      omni-monitor-tunnel@217.142.232.200
+
+      '
+services:
+  tunnel:
+    build:
+      context: .
+      dockerfile_inline: 'FROM alpine:3.22
+
+        RUN apk add --no-cache openssh-client
+
+        '
+    cap_drop:
+    - ALL
+    command:
+    - sh
+    - /app/start.sh
+    configs:
+    - source: start
+      target: /app/start.sh
+    - source: known
+      target: /app/known_hosts
+    cpus: '0.15'
+    environment:
+      TUNNEL_PRIVATE_KEY_B64: ${TUNNEL_PRIVATE_KEY_B64}
+    image: omni-monitor-tunnel:1
+    labels:
+      traefik.enable: 'false'
+    logging:
+      driver: json-file
+      options:
+        max-file: '2'
+        max-size: 2m
+    mem_limit: 48m
+    network_mode: host
+    restart: unless-stopped
+    security_opt:
+    - no-new-privileges:true
+    tmpfs:
+    - /run/tunnel:rw,noexec,nosuid,size=1m,uid=65534,gid=65534,mode=0700
+    user: 65534:65534
