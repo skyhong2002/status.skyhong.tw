@@ -32,7 +32,7 @@ function historyFor(id, history) {
 }
 
 function statusLabel(target) {
-  if (!target.up) return { cls: 'down', text: 'Unavailable' };
+  if (!target.up) return { cls: 'down', text: target.id.startsWith('omni-') && !target.statusCode ? 'Probe unreachable' : 'Unavailable' };
   if (target.degraded) return { cls: 'degraded', text: 'Degraded' };
   return { cls: '', text: 'Operational' };
 }
@@ -73,7 +73,12 @@ function renderProducts(data) {
   }).join('');
   const isOmni = (target) => target.id.startsWith('omni-');
   $('product-list').innerHTML = renderRows(data.targets.filter((target) => !isOmni(target)));
-  $('omni-list').innerHTML = renderRows(data.targets.filter(isOmni));
+  const omni = data.targets.filter(isOmni);
+  const unreachable = omni.filter((target) => !target.up && !target.statusCode).length;
+  const healthy = omni.filter((target) => target.up && !target.degraded).length;
+  const expanded = $('omni-details')?.open || false;
+  const status = healthy === omni.length ? 'Operational' : unreachable === omni.length ? 'Probe unreachable' : 'Needs attention';
+  $('omni-list').innerHTML = `<article class="monitor-row"><div class="monitor-top"><div class="monitor-name"><a href="https://omni.observe.tw/">OmniObserve</a><span>${healthy}/${omni.length} checks healthy · probe: skyhong.tw</span></div><span class="status-label ${healthy === omni.length ? '' : 'down'}">${status}</span><div class="monitor-metrics"><strong>${healthy}/${omni.length}</strong><span>endpoints</span></div></div><details id="omni-details" ${expanded ? 'open' : ''}><summary style="cursor:pointer;margin-top:12px">Environment details (${omni.length})</summary>${unreachable ? '<p>監控主機無法連到部分端點；這不等於已確認服務本身故障。</p>' : ''}${renderRows(omni)}</details></article>`;
 }
 
 function expiryRow(name, sub, days, known, warnDays) {
@@ -135,7 +140,8 @@ function renderAttention(data, remote, ai) {
   const certWarn = data.thresholds?.certWarnDays ?? 21;
   const domainWarn = data.thresholds?.domainWarnDays ?? 30;
   const issues = [
-    ...data.targets.filter((item) => !item.up).map((item) => ({ name: item.name, detail: item.statusCode ? `HTTP ${item.statusCode} · ${item.detail}` : item.detail })),
+    ...data.targets.filter((item) => !item.up && !item.id.startsWith('omni-')).map((item) => ({ name: item.name, detail: item.statusCode ? `HTTP ${item.statusCode} · ${item.detail}` : item.detail })),
+    ...(() => { const failed = data.targets.filter((item) => item.id.startsWith('omni-') && !item.up); return failed.length ? [{name: 'OmniObserve', detail: `${failed.length} checks failed from skyhong.tw; expand OmniObserve for details. ${failed.every((item) => !item.statusCode) ? 'No HTTP response received; service health is not confirmed.' : ''}`}]: []; })(),
     ...data.targets.filter((item) => item.up && item.degraded).map((item) => ({ name: item.name, detail: item.degradedReason || 'Degraded' })),
     ...data.services.filter((item) => !item.up),
     ...remote.filter((item) => !item.up),
