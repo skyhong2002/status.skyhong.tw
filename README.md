@@ -76,3 +76,19 @@ The application runs as UID/GID 1000 with all capabilities dropped, a read-only 
 `agent/vps_host_reporter.sh` does the same for the Linux VPS: run it once a minute from cron and it posts disk, memory, and load to the dashboard as the `vps` remote agent. It reads `AGENT_INGEST_TOKEN` from the environment or from the adjacent deployment `.env`. Load is considered down only when both the 1-minute and 5-minute averages exceed `LOAD_WARN_PER_CORE` (default 2) times the CPU count, so a brief spike does not create an incident.
 
 Standalone Docker containers are additionally inspected for restart count and OOM-kills, so a crash-looping or out-of-memory container is reported as down instead of appearing to run.
+
+## OmniObserve probe source
+
+OmniObserve targets use the `omni-probe` agent on SkyLabMac, which probes the
+public HTTPS URLs every 60 seconds. This works around the observed path failure
+from skyhong.tw to IIC (no inbound packets reached the VM). Results older than
+180 seconds, missing results, and non-200 responses fail closed.
+
+The direct skyhong.tw path remains separately checked and alerted as
+`omni-monitor-path`; it is not counted as an application outage. The compact
+OmniObserve section labels its source and discloses this path issue in details.
+
+Agent source: `agent/omni_http_agent.py`, public target list: `agent/omni-targets.json`.
+On SkyLabMac, launchd job `tw.skyhong.omni-http-probe` runs every 60 seconds and
+reads the pre-existing `~/.config/sky-status-agent.json` token configuration.
+The original SkyLabMac process agent is unchanged.

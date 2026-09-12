@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {remoteProbe} from './remote-probe.mjs';
+const target={id:'omni-main-web',probeAgent:'omni-probe'};
+const now=1000000;
+const agents={'omni-probe':{receivedAt:new Date(now-1000).toISOString(),items:[{id:target.id,up:true,statusCode:200,latencyMs:30}]}};
+test('fresh successful independent probe is up',()=>assert.equal(remoteProbe(target,agents,now).up,true));
+test('stale probe cannot report healthy',()=>assert.equal(remoteProbe(target,agents,now+180000).up,false));
+test('missing probe fails closed',()=>assert.equal(remoteProbe(target,{},now).up,false));
+test('incorrect HTTP code cannot report healthy',()=>{const a=structuredClone(agents);a['omni-probe'].items[0].statusCode=500;assert.equal(remoteProbe(target,a,now).up,false)});

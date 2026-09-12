@@ -1,3 +1,4 @@
+import { remoteProbe } from './remote-probe.mjs';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
@@ -92,6 +93,7 @@ function elapsed(ms) {
 }
 
 async function checkTarget(target) {
+  if (target.probeAgent) return remoteProbe(target, state.agents);
   const startedAt = Date.now();
   const checkUrl = target.checkUrl || target.url;
   const controller = new AbortController();
@@ -233,6 +235,8 @@ async function refresh() {
   try { aiUsage = await getAiUsage(); } catch (error) { errors.push('AI usage collection temporarily unavailable'); }
   state.checkedAt = new Date().toISOString();
   state.targets = checkedTargets;
+  const omniMain = targets.find((target) => target.id === 'omni-main-web');
+  state.omniNetworkPath = omniMain ? await checkTarget({ ...omniMain, probeAgent: null }) : null;
   state.services = services;
   state.aiUsage = aiUsage;
   state.errors = errors;
@@ -243,6 +247,7 @@ async function refresh() {
   try { uptimeStore.record(historyItems); state.uptime = uptimeStore.summary(historyItems.map((item) => item.id)); } catch {}
   const alertItems = [
     ...checkedTargets.map((t) => ({ id: `target:${t.id}`, name: t.name, up: t.up, detail: t.statusCode ? `HTTP ${t.statusCode} · ${t.detail}` : t.detail })),
+    ...(state.omniNetworkPath ? [{id: 'omni-monitor-path', name: 'skyhong.tw to OmniObserve network path', up: state.omniNetworkPath.up, detail: state.omniNetworkPath.detail}] : []),
     ...services.map((s) => ({ id: `runtime:${s.name}`, name: s.name, up: s.up, detail: s.detail })),
     ...remoteItems().map((r) => ({ id: `remote:${r.id}`, name: r.name, up: r.up, detail: r.detail })),
     ...heartbeatItems.map((h) => ({ id: `heartbeat:${h.id}`, name: `${h.name} · heartbeat`, up: h.up, detail: h.detail })),
@@ -270,7 +275,7 @@ function agentAuthorized(request) {
 
 function remoteItems() {
   const now = Date.now();
-  return Object.entries(state.agents).flatMap(([agentId, agent]) => {
+  return Object.entries(state.agents).filter(([id]) => id !== 'omni-probe').flatMap(([agentId, agent]) => {
     const stale = !agent.receivedAt || now - new Date(agent.receivedAt).getTime() > intervalMs * 3;
     return (agent.items || []).map((item) => ({
       ...item,
@@ -310,6 +315,8 @@ async function ingestAgent(request, response, agentId) {
     state.agents[agentId] = { host: payload.host.slice(0, 80), receivedAt: new Date().toISOString(), items: payload.items.map((item) => ({
       id: String(item.id || '').slice(0, 80), name: String(item.name || '').slice(0, 120), kind: String(item.kind || 'Process').slice(0, 80),
       up: Boolean(item.up), detail: String(item.detail || '').slice(0, 200),
+      statusCode: Number.isInteger(item.statusCode) && item.statusCode >= 100 && item.statusCode <= 599 ? item.statusCode : null,
+      latencyMs: Number.isFinite(item.latencyMs) ? Math.max(0, Math.min(60000, item.latencyMs)) : 0,
     })).filter((item) => item.id && item.name) };
     recordHistory(remoteItems());
     await Promise.all([saveHistory(), saveJson(agentsFile, state.agents)]);

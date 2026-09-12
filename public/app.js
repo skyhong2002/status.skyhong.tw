@@ -7,7 +7,7 @@ function freshness(receivedAt) {
 }
 
 function remoteItems(agents) {
-  return Object.entries(agents || {}).flatMap(([id, agent]) => (agent.items || []).map((item) => ({
+  return Object.entries(agents || {}).filter(([id]) => id !== 'omni-probe').flatMap(([id, agent]) => (agent.items || []).map((item) => ({
     ...item,
     id: `${id}:${item.id}`,
     name: item.name,
@@ -78,7 +78,7 @@ function renderProducts(data) {
   const healthy = omni.filter((target) => target.up && !target.degraded).length;
   const expanded = $('omni-details')?.open || false;
   const status = healthy === omni.length ? 'Operational' : unreachable === omni.length ? 'Probe unreachable' : 'Needs attention';
-  $('omni-list').innerHTML = `<article class="monitor-row"><div class="monitor-top"><div class="monitor-name"><a href="https://omni.observe.tw/">OmniObserve</a><span>${healthy}/${omni.length} checks healthy · probe: skyhong.tw</span></div><span class="status-label ${healthy === omni.length ? '' : 'down'}">${status}</span><div class="monitor-metrics"><strong>${healthy}/${omni.length}</strong><span>endpoints</span></div></div><details id="omni-details" ${expanded ? 'open' : ''}><summary style="cursor:pointer;margin-top:12px">Environment details (${omni.length})</summary>${unreachable ? '<p>監控主機無法連到部分端點；這不等於已確認服務本身故障。</p>' : ''}${renderRows(omni)}</details></article>`;
+  $('omni-list').innerHTML = `<article class="monitor-row"><div class="monitor-top"><div class="monitor-name"><a href="https://omni.observe.tw/">OmniObserve</a><span>${healthy}/${omni.length} checks healthy · probe: SkyLabMac</span></div><span class="status-label ${healthy === omni.length ? '' : 'down'}">${status}</span><div class="monitor-metrics"><strong>${healthy}/${omni.length}</strong><span>endpoints</span></div></div><details id="omni-details" ${expanded ? 'open' : ''}><summary style="cursor:pointer;margin-top:12px">Environment details (${omni.length})</summary>${unreachable ? '<p>監控主機無法連到部分端點；這不等於已確認服務本身故障。</p>' : ''}${data.omniNetworkPath && !data.omniNetworkPath.up ? '<p>skyhong.tw → 國網的路徑仍無法連線；上述服務狀態由 SkyLabMac 獨立檢查。</p>' : ''}${renderRows(omni)}</details></article>`;
 }
 
 function expiryRow(name, sub, days, known, warnDays) {
@@ -141,8 +141,9 @@ function renderAttention(data, remote, ai) {
   const domainWarn = data.thresholds?.domainWarnDays ?? 30;
   const issues = [
     ...data.targets.filter((item) => !item.up && !item.id.startsWith('omni-')).map((item) => ({ name: item.name, detail: item.statusCode ? `HTTP ${item.statusCode} · ${item.detail}` : item.detail })),
-    ...(() => { const failed = data.targets.filter((item) => item.id.startsWith('omni-') && !item.up); return failed.length ? [{name: 'OmniObserve', detail: `${failed.length} checks failed from skyhong.tw; expand OmniObserve for details. ${failed.every((item) => !item.statusCode) ? 'No HTTP response received; service health is not confirmed.' : ''}`}]: []; })(),
+    ...(() => { const failed = data.targets.filter((item) => item.id.startsWith('omni-') && !item.up); return failed.length ? [{name: 'OmniObserve', detail: `${failed.length} checks failed from SkyLabMac; expand OmniObserve for details. ${failed.every((item) => !item.statusCode) ? 'No HTTP response received; service health is not confirmed.' : ''}`}]: []; })(),
     ...data.targets.filter((item) => item.up && item.degraded).map((item) => ({ name: item.name, detail: item.degradedReason || 'Degraded' })),
+    ...(data.omniNetworkPath && !data.omniNetworkPath.up ? [{name: 'OmniObserve monitoring route', detail: 'skyhong.tw cannot reach IIC; endpoint checks use SkyLabMac.'}] : []),
     ...data.services.filter((item) => !item.up),
     ...remote.filter((item) => !item.up),
     ...(data.heartbeats || []).filter((job) => !job.up).map((job) => ({ name: job.name, detail: job.detail })),
