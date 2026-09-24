@@ -49,7 +49,7 @@ function rateLimited(key, limit = 120, windowMs = 60_000) {
 const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
   { id: 'skyhong-tw', name: 'skyhong.tw', group: 'Products', url: 'https://skyhong.tw', keyword: 'Sky Hong' },
   { id: 'youtube-board-tw', name: 'youtube.board.tw', group: 'Products', url: 'https://youtube.board.tw', acceptedStatuses: [200, 301, 302, 307, 308, 403] },
-  { id: 'harmonica-observe', name: 'harmonica.observe.tw', group: 'Products', url: 'https://harmonica.observe.tw', keyword: '臺灣口琴觀測站' },
+  { id: 'harmonica-observe', name: 'harmonica.observe.tw', group: 'Products', url: 'https://harmonica.observe.tw', checkUrl: 'https://harmonica.observe.tw/?lang=en', keyword: 'Harmonica Observatory' },
   { id: 'youtube-observe', name: 'youtube.observe.tw', group: 'Products', url: 'https://youtube.observe.tw', keyword: 'YouTube Board', latencyThresholdMs: 5000 },
   { id: 'plaud-skyhong', name: 'plaud.observe.tw', group: 'Products', url: 'https://plaud.observe.tw', checkUrl: 'https://plaud.observe.tw/healthz', keyword: '"status":"ok"' },
   { id: 'mayor2026-observe', name: 'mayor2026.observe.tw', group: 'Products', url: 'https://mayor2026.observe.tw', keyword: '2026 市長' },
