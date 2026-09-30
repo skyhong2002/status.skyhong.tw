@@ -6,7 +6,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createAlerter } from './alerts.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
-import { buildHealthSnapshot } from './health.mjs';
+import { buildHealthSnapshot, buildReadinessSnapshot } from './health.mjs';
 import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from './probes.mjs';
 import { createUptimeStore } from './uptime.mjs';
 import { renderMetrics, renderBadge, renderFeed, countIncidents } from './observability.mjs';
@@ -425,6 +425,10 @@ const server = createServer(async (request, response) => {
   }
   if (url.pathname === '/api/status') return json(response, state);
   if (url.pathname === '/livez') return json(response, { ok: true });
+  if (url.pathname === '/readyz') {
+    const readiness = buildReadinessSnapshot({ state, intervalMs });
+    return json(response, readiness, readiness.ok ? 200 : 503);
+  }
   if (url.pathname === '/healthz') {
     const health = healthSnapshot();
     return json(response, health, health.ok ? 200 : 503);

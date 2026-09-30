@@ -22,4 +22,13 @@ export function buildHealthSnapshot(options, now = Date.now()) {
   return { ok: Object.values(checks).every(Boolean), checkedAt: state.checkedAt, checks };
 }
 
+// Routing must remain available to receive reports when a monitored dependency fails.
+export function buildReadinessSnapshot({ state, intervalMs }, now = Date.now()) {
+  const checkedAt = Date.parse(state.checkedAt || '');
+  const checks = {
+    refreshFresh: Number.isFinite(checkedAt) && now - checkedAt <= intervalMs * 3,
+  };
+  return { ok: checks.refreshFresh, checkedAt: state.checkedAt, checks };
+}
+
 export { deliveryUsable };

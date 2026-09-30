@@ -1,8 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildHealthSnapshot, deliveryUsable } from './health.mjs';
+import { buildHealthSnapshot, buildReadinessSnapshot, deliveryUsable } from './health.mjs';
 
 const now = Date.parse('2026-07-30T12:00:00Z');
+
+test('dependency failures remain visible without taking report ingestion offline', () => {
+  const state = healthyState();
+  state.aiUsage[0].connected = false;
+  state.services = [];
+  state.errors = ['Docker status temporarily unavailable'];
+  state.alertDelivery.incident.lastFailureAt = '2026-07-30T11:59:00Z';
+  const options = { state, intervalMs: 60_000, dockerConfigured: true,
+    usageConfigured: true, usageSyncIntervalMs: 600_000 };
+  assert.equal(buildHealthSnapshot(options, now).ok, false);
+  assert.equal(buildReadinessSnapshot(options, now).ok, true);
+});
+
+test('readiness fails before the first refresh or when the refresh loop stalls', () => {
+  for (const checkedAt of [null, 'invalid', '2026-07-30T11:56:59Z']) {
+    assert.equal(buildReadinessSnapshot({ state: { checkedAt }, intervalMs: 60_000 }, now).ok, false);
+  }
+});
 
 function healthyState() {
   return {

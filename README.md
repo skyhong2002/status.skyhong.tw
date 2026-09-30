@@ -48,7 +48,7 @@ curl -fsS "https://status.skyhong.tw/api/heartbeat/nightly-backup?token=$HEARTBE
 
 If a ping does not arrive within `periodSeconds + graceSeconds`, the heartbeat is marked late, surfaced on the dashboard, and sent as an incident alert. This generalizes the bespoke Bamboo watcher freshness check to any job.
 
-The included `External status watchdog` GitHub Actions workflow probes the deep `/healthz` endpoint every five minutes, deduplicates failures with a GitHub Issue, and sends Discord down/recovery messages. This remains independent when the VPS or dashboard is unavailable. `EXTERNAL_HEARTBEAT_URL` remains available as an optional second dead-man service.
+The included `External status watchdog` GitHub Actions workflow probes the `/readyz` endpoint every five minutes, deduplicates failures with a GitHub Issue, and sends Discord down/recovery messages. This remains independent when the VPS or dashboard is unavailable. `EXTERNAL_HEARTBEAT_URL` remains available as an optional second dead-man service.
 
 The production heartbeat set covers the VPS reporter, Bamboo Discord watcher, n8n scheduler, and the daily status-data backup. `agent/status_data_backup.sh` uses SQLite's online backup API, archives the JSON state, retains 14 days, and records its heartbeat only after the archive completes.
 
@@ -57,7 +57,8 @@ The production heartbeat set covers the VPS reporter, Bamboo Discord watcher, n8
 - `GET /metrics` — Prometheus exposition of per-monitor availability (`sky_up`), response time, certificate and domain days-remaining, rolling uptime ratios, and the active incident count, for scraping into Grafana or Alertmanager.
 - `GET /badge.svg` — an embeddable SVG badge that reads operational or shows the active incident count.
 - `GET /feed.xml` — an RSS feed of down and recovery events, backed by an incident log in `/data/incidents.json`.
-- `GET /healthz` — deep readiness covering refresh freshness, Docker, OpenAI sync freshness, and both Discord webhook configurations. `GET /livez` remains the process-only liveness endpoint.
+- `GET /readyz` — dashboard readiness based on a fresh monitoring loop. Docker routing and the external watchdog use this endpoint so an OpenAI, Docker collector, or notification failure cannot block agent reports and heartbeats.
+- `GET /healthz` — detailed dependency health covering refresh freshness, Docker, OpenAI sync freshness, and both Discord webhook configurations. Dependency failures remain visible here and in incident alerts. `GET /livez` remains the process-only liveness endpoint.
 
 Set `MAINTENANCE_JSON` to an array of `{ start, end, reason }` ISO windows to pause alerts and show a maintenance banner during planned work. The agent ingest and heartbeat endpoints are rate limited per client IP.
 
