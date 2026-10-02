@@ -21,13 +21,16 @@ test('uses the reported service tier before model configuration', () => {
   assert.equal(poolForUsage('gpt-5.4-2026-03-05', 'default', ['gpt-5.4-*'], miniModels), 'billable');
 });
 
-test('routes GPT-5.6 Luna and Terra to the mini pool and Sol to the high pool', () => {
+test('routes Luna and Terra models to the mini pool and Sol to the high pool', () => {
   const highModels = [];
-  const miniModels = ['*mini*', '*nano*', 'gpt-5.6-luna*', 'gpt-5.6-terra*'];
+  const miniModels = ['*mini*', '*nano*', 'gpt-5.6-luna*', 'gpt-5.6-terra*', 'gpt-6-luna*'];
   assert.equal(poolForUsage('gpt-5.6-luna', 'incentivized-tier', highModels, miniModels), 'mini');
   assert.equal(poolForUsage('gpt-5.6-terra', 'incentivized-tier', highModels, miniModels), 'mini');
   assert.equal(poolForUsage('gpt-5.6-luna-2026-08-01', 'incentivized-tier', highModels, miniModels), 'mini');
+  assert.equal(poolForUsage('gpt-6-luna', 'incentivized-tier', highModels, miniModels), 'mini');
+  assert.equal(poolForUsage('gpt-6-luna-2026-10-01', 'incentivized-tier', highModels, miniModels), 'mini');
   assert.equal(poolForUsage('gpt-5.6-sol', 'incentivized-tier', highModels, miniModels), 'high');
+  assert.equal(poolForUsage('gpt-6.1-sol', 'incentivized-tier', highModels, miniModels), 'high');
 });
 
 test('falls back to configured model patterns without a service tier', () => {
