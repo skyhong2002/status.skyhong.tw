@@ -196,7 +196,7 @@ function renderJobs(data) {
     const detail = !status?.configured ? 'Webhook not configured'
       : status.lastError ? `Last attempt failed · ${status.lastError}`
         : status.lastSuccessAt ? `Verified ${new Date(status.lastSuccessAt).toLocaleString()}` : 'Delivery not verified';
-    return { id, name: id === 'incident' ? 'Incident alerts' : 'OpenAI usage alerts', kind: 'Discord webhook', up, detail };
+    return { id, name: id === 'incident' ? 'Incident alerts' : `${id} alerts`, kind: 'Discord webhook', up, detail };
   });
   $('jobs').hidden = jobs.length === 0 && deliveries.length === 0;
   $('jobs-list').innerHTML = jobs.map((job) => runtimeRow(job)).join('');
@@ -205,7 +205,7 @@ function renderJobs(data) {
   $('delivery-total').textContent = `${deliveries.filter((delivery) => delivery.up).length}/${deliveries.length}`;
 }
 
-function renderAttention(data, remote, ai) {
+function renderAttention(data, remote) {
   const certWarn = data.thresholds?.certWarnDays ?? 21;
   const domainWarn = data.thresholds?.domainWarnDays ?? 30;
   const issues = [
@@ -218,13 +218,11 @@ function renderAttention(data, remote, ai) {
     ...(data.certificates || []).filter((c) => c.ok && c.daysRemaining != null && c.daysRemaining <= certWarn).map((c) => ({ name: `${c.host} · TLS certificate`, detail: `Expires in ${c.daysRemaining} days` })),
     ...(data.domains || []).filter((d) => d.ok && d.daysRemaining != null && d.daysRemaining <= domainWarn).map((d) => ({ name: `${d.domain} · domain registration`, detail: `Expires in ${d.daysRemaining} days` })),
     ...(data.gateway?.checks || []).filter((check) => !check.up).map((check) => ({ name: check.name, detail: localTimes(check.detail) })),
-    ...(ai && !ai.connected ? [{ name: ai.name, detail: ai.detail }] : []),
-    ...(ai?.pools || []).filter((pool) => pool.percent >= 70).map((pool) => ({ name: pool.name, detail: `${pool.percent.toFixed(1)}% of estimated pool used` })),
     ...Object.entries(data.alertDelivery || {}).filter(([, status]) => {
       const success = Date.parse(status?.lastSuccessAt || '');
       const failure = Date.parse(status?.lastFailureAt || '');
       return !status?.configured || !Number.isFinite(success) || (Number.isFinite(failure) && failure > success);
-    }).map(([id, status]) => ({ name: `${id === 'incident' ? 'Incident' : 'OpenAI usage'} alert delivery`, detail: status?.lastError || (status?.configured ? 'Delivery has not been verified' : 'Webhook not configured') })),
+    }).map(([id, status]) => ({ name: `${id === 'incident' ? 'Incident' : id} alert delivery`, detail: status?.lastError || (status?.configured ? 'Delivery has not been verified' : 'Webhook not configured') })),
   ];
   $('attention-section').hidden = issues.length === 0;
   $('attention-count').textContent = `${issues.length} active`;
@@ -232,46 +230,12 @@ function renderAttention(data, remote, ai) {
   return issues;
 }
 
-function usageTable(headers, rows) {
-  return `<table class="usage-table"><thead><tr>${headers.map((header) => `<th>${esc(header)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
+function gatewaySummary(gateway) {
+  const checks = gateway?.checks || [];
+  return checks.length ? `${checks.filter((check) => check.up).length} / ${checks.length}` : '-';
 }
 
-function renderAi(ai) {
-  if (!ai) {
-    $('ai-panel').innerHTML = '<div class="empty">OpenAI Usage API is not configured.</div>';
-    $('ai-sync').textContent = 'Not connected';
-    return;
-  }
-  $('ai-sync').textContent = ai.lastSyncAt ? `Synced ${new Date(ai.lastSyncAt).toLocaleString()}` : ai.detail;
-  const stats = `<div class="ai-stats">
-    <div class="ai-stat"><span>Input tokens today</span><strong>${number(ai.input)}</strong></div>
-    <div class="ai-stat"><span>Output tokens today</span><strong>${number(ai.output)}</strong></div>
-    <div class="ai-stat"><span>Requests today</span><strong>${number(ai.requests)}</strong></div>
-    <div class="ai-stat"><span>Cost · UTC day</span><strong>$${Number(ai.cost || 0).toFixed(4)}</strong></div>
-  </div>`;
-  // The bar's axis is tokens *used*, so the even-pace marker sits at the share of the day already
-  // gone: fill left of the line means under budget, fill past it means burning too fast.
-  const dayLeft = typeof ai.dayRemaining === 'number' ? ai.dayRemaining : null;
-  const hoursLeft = dayLeft === null ? null : dayLeft * 24;
-  const paceLabel = hoursLeft === null ? '' : (hoursLeft >= 1 ? `${hoursLeft.toFixed(1)}h` : `${Math.round(hoursLeft * 60)}m`);
-  const pools = ai.pools.map((pool) => {
-    const level = pool.percent >= 95 ? 'danger' : pool.percent >= 70 ? 'warn' : '';
-    const onPace = dayLeft === null ? null : pool.remaining >= pool.paceRemaining;
-    const paceUsed = dayLeft === null ? 0 : Math.max(0, pool.limit - pool.paceRemaining);
-    const marker = dayLeft === null ? '' : `<i class="pace-line" style="left:${((1 - dayLeft) * 100).toFixed(2)}%" title="${esc(`${paceLabel} left today · at even pace ${number(paceUsed)} would be used by now, leaving ${number(pool.paceRemaining)}`)}"></i>`;
-    const paceNote = dayLeft === null ? '' : `<span class="pace-note ${onPace ? '' : 'behind'}">${number(pool.paceRemaining)} at even pace</span>`;
-    return `<div class="pool"><div class="pool-head"><strong>${esc(pool.name)}</strong><b>${number(pool.used)} / ${number(pool.limit)} · ${pool.percent.toFixed(1)}%</b></div><div class="pool-track"><div class="pool-fill ${level}" style="width:${Math.min(100, pool.percent)}%"></div>${marker}</div><div class="pool-foot"><span>${number(pool.remaining)} remaining</span>${paceNote}</div></div>`;
-  }).join('');
-  const trendMax = Math.max(1, ...ai.trend.map((point) => point.tokens));
-  const trend = `<span class="subheading">Last 24 hours</span><div class="trend">${ai.trend.map((point) => `<i title="${new Date(point.start * 1000).toLocaleString()}: ${number(point.tokens)} tokens" style="height:${Math.max(3, (point.tokens / trendMax) * 100)}%"></i>`).join('')}</div>`;
-  const modelRows = ai.byModel.map((item) => `<tr><td>${esc(item.model || 'Unknown')}</td><td><span class="tag ${item.pool === 'billable' ? 'billable' : ''}">${esc(item.pool === 'billable' ? 'Possible billing' : `${item.pool} pool`)}</span></td><td>${number(item.tokens)}</td></tr>`);
-  const keyRows = ai.byKey.map((item) => `<tr><td>${esc(item.name)}</td><td>${number(item.requests)}</td><td>${number(item.tokens)}</td></tr>`);
-  const tables = `<span class="subheading">Models</span>${usageTable(['Model', 'Class', 'Tokens'], modelRows)}<span class="subheading" style="margin-top:20px">API keys</span>${usageTable(['Key / service', 'Requests', 'Tokens'], keyRows)}`;
-  const legend = dayLeft === null ? '' : `<div class="pace-legend">白線＝照平均步調，今日到現在「應該」用掉的量（還剩 ${esc(paceLabel)}）。填色在白線左邊代表用量還有餘裕，超過白線代表用太快。</div>`;
-  $('ai-panel').innerHTML = `${stats}<div class="ai-content"><div><span class="subheading">預估免費池使用量</span>${pools}${legend}${trend}</div><div>${tables}</div></div>`;
-}
-
-function renderGlobal(data, remote, ai, issues) {
+function renderGlobal(data, remote, issues) {
   const healthy = issues.length === 0;
   if (data.maintenance) {
     $('global-state').classList.remove('degraded');
@@ -284,7 +248,7 @@ function renderGlobal(data, remote, ai, issues) {
     $('summary-public').textContent = `${data.targets.filter((item) => item.up).length} / ${data.targets.length}`;
     $('summary-docker').textContent = `${data.services.filter((item) => item.up).length} / ${data.services.length}`;
     $('summary-remote').textContent = `${remote.filter((item) => item.up).length} / ${remote.length}`;
-    $('summary-ai').textContent = number(ai?.requests);
+    $('summary-gateway').textContent = gatewaySummary(data.gateway);
     return;
   }
   $('global-state').classList.remove('maintenance');
@@ -296,7 +260,7 @@ function renderGlobal(data, remote, ai, issues) {
   $('summary-public').textContent = `${data.targets.filter((item) => item.up).length} / ${data.targets.length}`;
   $('summary-docker').textContent = `${data.services.filter((item) => item.up).length} / ${data.services.length}`;
   $('summary-remote').textContent = `${remote.filter((item) => item.up).length} / ${remote.length}`;
-  $('summary-ai').textContent = number(ai?.requests);
+  $('summary-gateway').textContent = gatewaySummary(data.gateway);
   document.title = healthy ? 'All systems operational · Sky Status' : `${issues.length} attention ${issues.length === 1 ? 'item' : 'items'} · Sky Status`;
 }
 
@@ -305,15 +269,13 @@ async function load() {
   if (!response.ok) throw new Error(`Status API returned ${response.status}`);
   const data = await response.json();
   const remote = remoteItems(data.agents);
-  const ai = data.aiUsage[0];
   renderProducts(data);
   renderInfrastructure(data, remote);
   renderJobs(data);
   renderCertificates(data);
   renderGateway(data);
-  renderAi(ai);
-  const issues = renderAttention(data, remote, ai);
-  renderGlobal(data, remote, ai, issues);
+  const issues = renderAttention(data, remote);
+  renderGlobal(data, remote, issues);
 }
 
 load().catch(() => {

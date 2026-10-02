@@ -21,7 +21,7 @@ mkdir -p "$BACKUP_ROOT"
 chmod 700 "$BACKUP_ROOT"
 work_dir=$(mktemp -d)
 cleanup() {
-  docker exec "$CONTAINER" rm -f /tmp/status-usage-backup.sqlite /tmp/status-uptime-backup.sqlite >/dev/null 2>&1 || true
+  docker exec "$CONTAINER" rm -f /tmp/status-uptime-backup.sqlite >/dev/null 2>&1 || true
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
@@ -29,7 +29,6 @@ trap cleanup EXIT
 docker exec "$CONTAINER" node --input-type=module -e '
   import { DatabaseSync, backup } from "node:sqlite";
   for (const [source, destination] of [
-    ["/data/usage.sqlite", "/tmp/status-usage-backup.sqlite"],
     ["/data/uptime.sqlite", "/tmp/status-uptime-backup.sqlite"],
   ]) {
     const db = new DatabaseSync(source, { readOnly: true });
@@ -37,7 +36,6 @@ docker exec "$CONTAINER" node --input-type=module -e '
     db.close();
   }
 '
-docker exec "$CONTAINER" cat /tmp/status-usage-backup.sqlite > "$work_dir/usage.sqlite"
 docker exec "$CONTAINER" cat /tmp/status-uptime-backup.sqlite > "$work_dir/uptime.sqlite"
 
 for state_file in agents.json alerts.json alert-delivery.json history.json incidents.json heartbeats.json; do

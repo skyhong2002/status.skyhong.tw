@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#0b0e10">
-    <meta name="description" content="Live service, infrastructure, and OpenAI usage status for Sky Hong's projects.">
+    <meta name="description" content="Live service, infrastructure, and AI gateway status for Sky Hong's projects.">
     <title>Sky Status</title>
     <link rel="icon" href="/status-mark.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/styles.css">
@@ -23,7 +23,6 @@
           <a href="#infrastructure">Infrastructure</a>
           <a href="#certificates">Certificates</a>
           <a href="#ai-gateway">AI gateway</a>
-          <a href="#ai-usage">AI usage</a>
         </nav>
         <div class="last-check" id="last-check">Loading status...</div>
       </div>
@@ -42,7 +41,7 @@
         <div><span>Public endpoints</span><strong id="summary-public">-</strong></div>
         <div><span>Docker runtime</span><strong id="summary-docker">-</strong></div>
         <div><span>SkyLabMac</span><strong id="summary-remote">-</strong></div>
-        <div><span>AI requests today</span><strong id="summary-ai">-</strong></div>
+        <div><span>AI gateway</span><strong id="summary-gateway">-</strong></div>
       </section>
 
       <section class="dashboard-section" id="attention-section" hidden>
@@ -121,15 +120,10 @@
           </article>
         </div>
       </section>
-
-      <section class="dashboard-section" id="ai-usage">
-        <div class="section-heading"><div><span class="eyebrow">Organization telemetry</span><h2>OpenAI usage</h2></div><span class="section-meta" id="ai-sync">Not connected</span></div>
-        <div class="ai-panel" id="ai-panel"></div>
-      </section>
     </main>
 
     <footer class="shell site-footer">
-      <span>Checks refresh every minute. OpenAI usage syncs every 10 minutes.</span>
+      <span>Checks refresh every minute. Gateway usage windows are read every 5 minutes.</span>
       <a href="https://github.com/skyhong2002/status.skyhong.tw">Source and notices</a>
     </footer>
   </body>

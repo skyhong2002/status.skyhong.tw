@@ -11,7 +11,6 @@ COPY heartbeats.mjs ./
 COPY health.mjs ./
 COPY uptime.mjs ./
 COPY observability.mjs ./
-COPY usage.mjs ./
 COPY gateway.mjs ./
 COPY agent ./agent
 COPY public ./public

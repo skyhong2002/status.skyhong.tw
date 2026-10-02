@@ -36,13 +36,6 @@ if (!current.get('HEARTBEAT_TOKEN')) {
   current.set('HEARTBEAT_TOKEN', token);
 }
 
-if (!current.get('DISCORD_WEBHOOK_URL')) {
-  const incidentWebhook = current.get('DISCORD_ALERT_WEBHOOK_URL');
-  if (!incidentWebhook) throw new Error('DISCORD_ALERT_WEBHOOK_URL is not configured');
-  envText = replace(envText, 'DISCORD_WEBHOOK_URL', incidentWebhook);
-  current.set('DISCORD_WEBHOOK_URL', incidentWebhook);
-}
-
 const temporary = `${envPath}.tmp`;
 await writeFile(temporary, envText, { mode: 0o600 });
 await chmod(temporary, 0o600);
@@ -52,6 +45,5 @@ console.log(JSON.stringify({
   targetsConfigured: JSON.parse(current.get('STATUS_TARGETS_JSON')).length,
   heartbeatsConfigured: JSON.parse(current.get('HEARTBEATS_JSON')).length,
   heartbeatTokenConfigured: Boolean(current.get('HEARTBEAT_TOKEN')),
-  usageWebhookConfigured: Boolean(current.get('DISCORD_WEBHOOK_URL')),
-  incidentWebhookConfigured: Boolean(current.get('DISCORD_ALERT_WEBHOOK_URL')),
+  incidentWebhookConfigured: Boolean(current.get('DISCORD_ALERT_WEBHOOK_URL') || current.get('DISCORD_WEBHOOK_URL')),
 }));

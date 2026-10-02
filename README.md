@@ -16,16 +16,6 @@ A target can also assert on the response body and latency: `keyword` marks the c
 
 Every HTTPS target's TLS certificate is inspected on a schedule (`CERT_CHECK_INTERVAL_HOURS`, default 6) and its registrable domain's registration expiry is looked up — over RDAP for generic TLDs, and over WHOIS (`whois.twnic.net.tw`) for `.tw` domains, which are not served by RDAP. A certificate within `CERT_WARN_DAYS` (default 21) or a domain within `DOMAIN_WARN_DAYS` (default 30) of expiry is surfaced on the dashboard and sent as an incident alert. A failed or unsupported expiry lookup is shown as unknown and never raised as an incident, so a WHOIS timeout cannot produce a false alert.
 
-## OpenAI organization usage
-
-The server reads `OPENAI_ADMIN_KEY` from the deployment `.env`. Use a dedicated Admin key restricted to the `Usage` read permission. The key is excluded from Git and the Docker build context, is never returned by the API, and is never embedded in browser JavaScript.
-
-The collector runs every 10 minutes (`OPENAI_SYNC_INTERVAL_MINUTES`) and re-fetches 48 hourly buckets. Results are upserted into `/data/usage.sqlite` by bucket, project, API key, model, and service tier, so delayed usage replaces the earlier snapshot instead of being counted twice. Costs are collected from the separate organization costs endpoint.
-
-The interface labels the quota view `預估免費池使用量` because the Usage API reports observed tokens, not an official remaining-free-token field. Usage reported with an incentivized service tier is assigned to the high or mini pool from its model family; a reported non-incentivized tier is treated as possible billing traffic. Eligible-model patterns remain a fallback for records without service-tier data. Pool limits, fallback model patterns, project labels, and key-to-service labels are deployment settings. Possible billing traffic is shown in the usage table but does not count as a service incident.
-
-Set `DISCORD_WEBHOOK_URL` to enable deduplicated alerts at 70%, 85%, and 95% for each pool. No webhook means the dashboard still shows the thresholds without sending messages.
-
 ## AI gateway
 
 The dashboard watches the shared OpenAI-compatible gateway (CLIProxyAPI on sky-mini; see `~/Projects/ai-gateway`). Two sources feed the `AI gateway` section:
@@ -41,11 +31,9 @@ Alongside the rolling 24-hour history, each check is folded into per-day uptime 
 
 ## Incident alerts
 
-Set `DISCORD_ALERT_WEBHOOK_URL` to receive a Discord message whenever a monitored item goes down or recovers. This covers every public target, Docker service, remote agent item, and the OpenAI collector's own health. If the alert webhook is unset it falls back to `DISCORD_WEBHOOK_URL`; if neither is set, no alerts are sent.
+Set `DISCORD_ALERT_WEBHOOK_URL` to receive a Discord message whenever a monitored item goes down or recovers. This covers every public target, Docker service, remote agent item, heartbeat, certificate and domain expiry, and AI gateway check. If the alert webhook is unset it falls back to `DISCORD_WEBHOOK_URL`; if neither is set, no alerts are sent.
 
-An item must fail `ALERT_FAILURE_THRESHOLD` consecutive checks (default 2) before a down alert fires, which suppresses single-check flapping. Each incident sends exactly one down message and one recovery message; the recovery note includes how long the item was down. Incident state is persisted to `/data/alerts.json`, so a restart neither loses an open incident nor re-sends an alert that already went out. A webhook that fails to deliver is retried on the next cycle rather than being marked as sent. Delivery attempts, successes, and failures are persisted and exposed through the public status API and Prometheus metrics. An authenticated `POST /api/alerts/test` checks both Discord webhook paths end to end.
-
-These outage alerts are independent of the OpenAI free-pool threshold alerts, so the two can target different channels.
+An item must fail `ALERT_FAILURE_THRESHOLD` consecutive checks (default 2) before a down alert fires, which suppresses single-check flapping. Each incident sends exactly one down message and one recovery message; the recovery note includes how long the item was down. Incident state is persisted to `/data/alerts.json`, so a restart neither loses an open incident nor re-sends an alert that already went out. A webhook that fails to deliver is retried on the next cycle rather than being marked as sent. Delivery attempts, successes, and failures are persisted and exposed through the public status API and Prometheus metrics. An authenticated `POST /api/alerts/test` checks the Discord webhook end to end.
 
 ## Heartbeats (dead-man's switch)
 
@@ -66,8 +54,8 @@ The production heartbeat set covers the VPS reporter, Bamboo Discord watcher, n8
 - `GET /metrics` — Prometheus exposition of per-monitor availability (`sky_up`), response time, certificate and domain days-remaining, rolling uptime ratios, and the active incident count, for scraping into Grafana or Alertmanager.
 - `GET /badge.svg` — an embeddable SVG badge that reads operational or shows the active incident count.
 - `GET /feed.xml` — an RSS feed of down and recovery events, backed by an incident log in `/data/incidents.json`.
-- `GET /readyz` — dashboard readiness based on a fresh monitoring loop. Docker routing and the external watchdog use this endpoint so an OpenAI, Docker collector, or notification failure cannot block agent reports and heartbeats.
-- `GET /healthz` — detailed dependency health covering refresh freshness, Docker, OpenAI sync freshness, and both Discord webhook configurations. Dependency failures remain visible here and in incident alerts. `GET /livez` remains the process-only liveness endpoint.
+- `GET /readyz` — dashboard readiness based on a fresh monitoring loop. Docker routing and the external watchdog use this endpoint so a Docker collector, AI gateway, or notification failure cannot block agent reports and heartbeats.
+- `GET /healthz` — detailed dependency health covering refresh freshness, Docker, and the incident Discord webhook. Dependency failures remain visible here and in incident alerts. `GET /livez` remains the process-only liveness endpoint.
 
 Set `MAINTENANCE_JSON` to an array of `{ start, end, reason }` ISO windows to pause alerts and show a maintenance banner during planned work. The agent ingest and heartbeat endpoints are rate limited per client IP.
 
@@ -75,7 +63,7 @@ Set `MAINTENANCE_JSON` to an array of `{ start, end, reason }` ISO windows to pa
 
 The Compose stack joins `dokploy-network` and uses Dokploy's existing Traefik middleware and Let's Encrypt resolver. It runs in `/home/ubuntu/apps/sky-status-dashboard` on the host.
 
-Before deployment, back up `.env`, then run `node scripts/configure_production_env.mjs .env .env.example` to apply the checked-in target/heartbeat configuration, generate a dedicated heartbeat token when absent, and populate the usage webhook from the incident webhook when no separate channel is configured.
+Before deployment, back up `.env`, then run `node scripts/configure_production_env.mjs .env .env.example` to apply the checked-in target/heartbeat configuration and generate a dedicated heartbeat token when absent. The script replaces `STATUS_TARGETS_JSON` and `HEARTBEATS_JSON` wholesale, so only run it when `.env.example` matches production; for any other change, edit the host `.env` directly.
 
 The application runs as UID/GID 1000 with all capabilities dropped, a read-only root filesystem, a writable `/data` volume, and a small temporary filesystem. Security headers include HSTS, CSP, frame denial, and a restrictive permissions policy.
 

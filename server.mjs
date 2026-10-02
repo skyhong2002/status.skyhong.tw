@@ -10,7 +10,6 @@ import { buildHealthSnapshot, buildReadinessSnapshot } from './health.mjs';
 import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from './probes.mjs';
 import { createUptimeStore } from './uptime.mjs';
 import { renderMetrics, renderBadge, renderFeed, countIncidents } from './observability.mjs';
-import { createUsageMonitor } from './usage.mjs';
 import { buildGatewaySnapshot, probeGateway, sanitizeGatewayReport } from './gateway.mjs';
 
 const port = Number(process.env.PORT || 3000);
@@ -25,7 +24,6 @@ const domainWarnDays = Number(process.env.DOMAIN_WARN_DAYS || 30);
 const certIntervalMs = Math.max(1, Number(process.env.CERT_CHECK_INTERVAL_HOURS || 6)) * 3600 * 1000;
 const heartbeatToken = process.env.HEARTBEAT_TOKEN || process.env.AGENT_INGEST_TOKEN || '';
 const externalHeartbeatUrl = process.env.EXTERNAL_HEARTBEAT_URL || '';
-const usageSyncIntervalMs = Math.max(1, Number(process.env.OPENAI_SYNC_INTERVAL_MINUTES || 10)) * 60 * 1000;
 const maintenanceWindows = parseJson(process.env.MAINTENANCE_JSON, []);
 const publicOrigin = process.env.PUBLIC_ORIGIN || 'https://status.skyhong.tw';
 const gatewayUrl = process.env.AI_GATEWAY_URL || '';
@@ -67,8 +65,7 @@ const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
 // The agent's raw gateway report stays out of `state` (which is served publicly); only the
 // sanitized snapshot built from it is published.
 let gatewayReport = null;
-const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], gateway: null, alertDelivery: {}, errors: [], history: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
-const usageMonitor = await createUsageMonitor({ dataDir });
+const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, gateway: null, alertDelivery: {}, errors: [], history: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
 const alerter = await createAlerter({ dataDir });
 const heartbeats = await createHeartbeats({ dataDir });
 const uptimeStore = await createUptimeStore({ dataDir });
@@ -206,10 +203,6 @@ async function getDockerServices() {
   return [...swarm, ...standalone].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function getAiUsage() {
-  return usageMonitor ? [usageMonitor.summary()] : [];
-}
-
 async function loadHistory() {
   try { state.history = JSON.parse(await readFile(historyFile, 'utf8')); } catch { state.history = {}; }
   try { state.agents = JSON.parse(await readFile(agentsFile, 'utf8')); } catch { state.agents = {}; }
@@ -244,14 +237,11 @@ async function refresh() {
   ]);
   let services = [];
   try { services = await getDockerServices(); } catch (error) { errors.push('Docker status temporarily unavailable'); }
-  let aiUsage = [];
-  try { aiUsage = await getAiUsage(); } catch (error) { errors.push('AI usage collection temporarily unavailable'); }
   state.checkedAt = new Date().toISOString();
   state.targets = checkedTargets;
   const omniMain = targets.find((target) => target.id === 'omni-main-web');
   state.omniNetworkPath = omniMain ? await checkTarget({ ...omniMain, probeAgent: null, probeSocket: null }) : null;
   state.services = services;
-  state.aiUsage = aiUsage;
   state.errors = errors;
   state.gateway = buildGatewaySnapshot({ probe: gatewayProbe, probeConfigured: gatewayProbeConfigured, report: gatewayReport?.report, receivedAt: gatewayReport?.receivedAt });
   const gatewayItems = state.gateway?.checks || [];
@@ -272,13 +262,9 @@ async function refresh() {
     ...state.domains.filter((d) => d.ok && d.daysRemaining != null).map((d) => ({ id: `domain:${d.domain}`, name: `${d.domain} · domain registration`, up: d.daysRemaining > domainWarnDays, detail: `expires in ${d.daysRemaining}d` })),
   ];
   alertItems.push(...gatewayItems);
-  if (aiUsage[0]) alertItems.push({ id: 'openai-sync', name: 'OpenAI usage collection', up: aiUsage[0].connected !== false, detail: aiUsage[0].detail || '' });
   state.maintenance = activeMaintenance();
   if (!state.maintenance) { try { await alerter.evaluate(alertItems); } catch {} }
-  state.alertDelivery = {
-    incident: alerter.deliveryStatus(),
-    usage: aiUsage[0]?.alertDelivery || { configured: false },
-  };
+  state.alertDelivery = { incident: alerter.deliveryStatus() };
   await saveHistory();
   if (externalHeartbeatUrl) {
     try { void fetch(externalHeartbeatUrl, { signal: AbortSignal.timeout(10_000) }).catch(() => {}); } catch {}
@@ -403,8 +389,6 @@ function healthSnapshot(now = Date.now()) {
     state,
     intervalMs,
     dockerConfigured: Boolean(dockerApiUrl),
-    usageConfigured: Boolean(usageMonitor),
-    usageSyncIntervalMs,
   }, now);
 }
 
@@ -415,13 +399,8 @@ async function testAlerts(request, response) {
     return;
   }
   const incident = await alerter.testDelivery();
-  const usage = usageMonitor ? await usageMonitor.testAlert() : true;
-  state.alertDelivery = {
-    incident: alerter.deliveryStatus(),
-    usage: usageMonitor?.summary().alertDelivery || { configured: false },
-  };
-  const ok = incident && usage;
-  json(response, { ok, incident, usage, delivery: state.alertDelivery }, ok ? 200 : 502);
+  state.alertDelivery = { incident: alerter.deliveryStatus() };
+  json(response, { ok: incident, incident, delivery: state.alertDelivery }, incident ? 200 : 502);
 }
 
 
@@ -460,12 +439,10 @@ const server = createServer(async (request, response) => {
 });
 
 await loadHistory();
-if (usageMonitor) await usageMonitor.sync();
 await refresh();
 refreshCertificates().catch(() => {});
 setInterval(() => refreshCertificates().catch(() => {}), certIntervalMs);
 setInterval(() => refresh().catch(() => {}), intervalMs);
-if (usageMonitor) setInterval(() => usageMonitor.sync().catch(() => {}), usageSyncIntervalMs);
 server.listen(port, '0.0.0.0');
 
 export { checkTarget, parseJson, refreshCertificates };
