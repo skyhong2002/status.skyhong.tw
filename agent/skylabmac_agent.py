@@ -53,7 +53,6 @@ WATCHES = [
     ("launchd", "website-agent", "Harmonica website agent", "club.nycu.harmonica.website-agent"),
     ("launchd", "website-hermes", "Harmonica website gateway", "club.nycu.harmonica.website-hermes"),
     ("launchd", "hermes-dashboard", "Hermes dashboard UI", "local.hermes.dashboard-ui"),
-    ("launchd", "urtube-codex-shim", "URtube Codex shim", "tw.observe.urtube.codex-shim"),
     ("launchd", "chumei-auth", "Chumei auth server", "tw.observe.chumei.auth"),
     # Promo file server is submitted ad-hoc via `launchctl submit` (no plist), so going
     # down after a reboot is exactly what this watch should surface.
