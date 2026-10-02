@@ -8,13 +8,17 @@ from pathlib import Path
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from skylabmac_agent import (
-    bamboo_discord_status,
+from gateway_telemetry import (
     codex_credential,
     due,
+    gateway_report,
+    listener_target,
     mask_account,
     parse_gateway_config,
     summarize_rate_limits,
+)
+from skylabmac_agent import (
+    bamboo_discord_status,
     http_probe,
     launchd_status,
     load_launchd_job_state,
@@ -194,6 +198,51 @@ other: true
         self.assertFalse(due({"checkedAt": "2026-10-02T11:45:00Z"}, 1800, now))
         self.assertTrue(due({"checkedAt": "2026-10-02T11:29:59Z"}, 1800, now))
         self.assertEqual(mask_account("ops@example.com"), "o••@example.com")
+
+    def test_remote_host_report_uses_its_own_listener_config_and_credential(self):
+        seen = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def reply(self, body):
+                seen.append((self.command, self.path, self.headers.get("Authorization")))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(body).encode())
+
+            def do_GET(self):
+                self.reply({"data": [{"id": "sky-fast"}, {"id": "sky-quality"}, {"id": "gpt-6-luna"}]})
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.reply({"model": "gpt-6-luna"})
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory, "config.yaml")
+            config.write_text('# Managed by ai-gateway/apply.py, policy revision 2026-10-02\noauth-model-alias:\n  codex:\n'
+                              '    - name: "gpt-6-luna"\n      alias: "sky-fast"\n    - name: "gpt-6.1-sol"\n      alias: "sky-quality"\n')
+            Path(directory, "codex-abc-ops@example.com-pro.json").write_text(json.dumps({"refresh_token": "r", "email": "ops@example.com"}))
+            report = gateway_report(state_path=Path(directory, "state.json"), key="k",
+                                    base_url=f"http://127.0.0.1:{server.server_port}/v1", config_path=config,
+                                    auth_dir=directory, policy_path=None, read_usage=False)
+        self.assertEqual(report["local"]["aliasesListed"], {"sky-fast": True, "sky-quality": True})
+        self.assertEqual(report["local"]["target"], f"127.0.0.1:{server.server_port}")
+        self.assertEqual(report["config"]["revision"], "2026-10-02")
+        self.assertEqual(report["credential"]["account"], "o••@example.com")
+        self.assertEqual(report["inference"]["model"], "gpt-6-luna")
+        self.assertNotIn("usage", report)
+        self.assertNotIn("policy", report)
+        self.assertEqual([s[:2] for s in seen], [("GET", "/v1/models"), ("POST", "/v1/chat/completions")])
+        self.assertTrue(all(s[2] == "Bearer k" for s in seen))
+        self.assertNotIn("ops@example.com", json.dumps(report))
+        self.assertIsNone(listener_target("not a url"))
 
 
 if __name__ == "__main__":

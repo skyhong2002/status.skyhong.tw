@@ -108,12 +108,9 @@
       </section>
 
       <section class="dashboard-section" id="ai-gateway" hidden>
-        <div class="section-heading"><div><span class="eyebrow">sky-mini · CLIProxyAPI</span><h2>AI gateway</h2></div><span class="section-meta" id="gateway-policy"></span></div>
+        <div class="section-heading"><div><span class="eyebrow">CLIProxyAPI · one gateway per host</span><h2>AI gateway</h2></div><span class="section-meta" id="gateway-policy"></span></div>
         <div class="infrastructure-grid">
-          <article class="runtime-panel">
-            <div class="panel-heading"><div><span class="panel-kicker">Routing</span><h3>Gateway and aliases</h3></div><strong id="gateway-total">-</strong></div>
-            <div class="runtime-list" id="gateway-list"></div>
-          </article>
+          <div class="gateway-hosts" id="gateway-hosts"></div>
           <article class="runtime-panel">
             <div class="panel-heading"><div><span class="panel-kicker" id="gateway-plan">Codex subscription</span><h3>Usage windows</h3></div><strong id="gateway-usage-total">-</strong></div>
             <div class="gateway-usage" id="gateway-usage"></div>

@@ -110,6 +110,7 @@ h3 { font-size: 14px; }
 .runtime-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .runtime-state.down { color: var(--red); }
 .runtime-state.unknown { color: var(--faint); }
+.gateway-hosts { display: contents; }
 .gateway-usage { padding: 4px 18px 14px; }
 .gateway-usage .pool { margin: 12px 0 16px; }
 .gateway-note { margin: 0; color: var(--faint); font-size: 10px; line-height: 1.45; }

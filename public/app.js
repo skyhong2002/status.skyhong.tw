@@ -142,36 +142,46 @@ function stateRow(name, sub, up, label) {
   return `<div class="runtime-item"><div><strong>${esc(name)}</strong><span>${esc(sub)}</span></div><b class="runtime-state ${cls}">${esc(label)}</b></div>`;
 }
 
-function renderGateway(data) {
-  const gateway = data.gateway;
-  $('ai-gateway').hidden = !gateway;
-  if (!gateway) return;
-  const drift = gateway.configRevisionMatches === false ? ' · gateway config is on another revision' : '';
-  $('gateway-policy').textContent = gateway.revision ? `Policy ${gateway.revision}${drift}` : 'Policy unknown';
+function gatewayHostPanel(host, history) {
+  if (!host.enabled) {
+    const rows = stateRow('Not monitored', host.note || 'Disabled in hosts.json', null, 'Off');
+    return `<article class="runtime-panel"><div class="panel-heading"><div><span class="panel-kicker">Gateway host</span><h3>${esc(host.name)}</h3></div><strong>Off</strong></div><div class="runtime-list">${rows}</div></article>`;
+  }
   const rows = [];
-  for (const listener of gateway.listeners) {
-    const uptime = listener.id === 'tailnet' ? historyFor('gateway:tailnet', data.history).uptime : null;
+  for (const listener of host.listeners) {
+    const uptime = listener.id === 'probe' ? historyFor(`gateway:${host.name}:probe`, history).uptime : null;
     const latency = listener.up && listener.latencyMs != null ? ` · ${number(listener.latencyMs)} ms` : ` · ${listener.detail}`;
     rows.push(stateRow(listener.name, `${listener.source}${latency}${uptime == null ? '' : ` · ${pct(uptime)} 24h`}`, listener.up, listener.up ? 'Serving' : 'Down'));
   }
-  for (const alias of gateway.aliases) {
+  for (const alias of host.aliases) {
     const label = alias.up ? 'Mapped' : alias.listed === false ? 'Missing' : 'Drift';
     rows.push(stateRow(alias.alias, alias.detail, alias.listed === null && alias.configMatches === null ? null : alias.up, label));
   }
-  const credential = gateway.credential;
+  const credential = host.credential;
   if (credential) {
     const plan = credential.plan ? `ChatGPT ${credential.plan[0].toUpperCase()}${credential.plan.slice(1)}` : 'Codex OAuth';
     const sub = credential.up ? `${plan} · ${credential.account || 'account hidden'} · refreshed ${ago(credential.lastRefreshAt)}` : credential.detail;
-    rows.push(stateRow('Codex credential', sub, gateway.reportFresh ? credential.up : null, !gateway.reportFresh ? 'Stale' : credential.up ? 'Valid' : 'Invalid'));
+    rows.push(stateRow('Codex credential', sub, host.reportFresh ? credential.up : null, !host.reportFresh ? 'Stale' : credential.up ? 'Valid' : 'Invalid'));
   }
-  const inference = gateway.inference;
+  const inference = host.inference;
   if (inference) {
     const timing = inference.latencyMs != null ? ` · ${(inference.latencyMs / 1000).toFixed(1)} s` : '';
     rows.push(stateRow('Inference probe', `${inference.detail}${inference.up ? timing : ''} · ${ago(inference.checkedAt)} · every 30 min`, inference.fresh ? inference.up : null, !inference.fresh ? 'Stale' : inference.up ? 'Answered' : 'Failed'));
   }
-  const routing = gateway.checks.filter((check) => !check.id.startsWith('gateway:quota'));
-  $('gateway-list').innerHTML = rows.join('') || '<div class="empty">No gateway data yet.</div>';
-  $('gateway-total').textContent = `${routing.filter((check) => check.up).length}/${routing.length}`;
+  if (host.agent && !host.reportFresh) {
+    rows.push(stateRow('Host telemetry', host.reportReceivedAt ? `${host.agent} agent last reported ${ago(host.reportReceivedAt)}` : `${host.agent} agent has not reported`, false, 'Stale'));
+  }
+  const kicker = host.configRevisionMatches === false ? 'Gateway host · config on another revision' : 'Gateway host';
+  return `<article class="runtime-panel"><div class="panel-heading"><div><span class="panel-kicker">${esc(kicker)}</span><h3>${esc(host.name)}</h3></div><strong>${host.checks.filter((check) => check.up).length}/${host.checks.length}</strong></div><div class="runtime-list">${rows.join('') || '<div class="empty">No gateway data yet.</div>'}</div></article>`;
+}
+
+function renderGateway(data) {
+  const gateway = data.gateway;
+  $('ai-gateway').hidden = !gateway;
+  if (!gateway) return;
+  const live = gateway.hosts.filter((host) => host.enabled).length;
+  $('gateway-policy').textContent = `${gateway.revision ? `Policy ${gateway.revision}` : 'Policy unknown'} · ${live} ${live === 1 ? 'host' : 'hosts'}`;
+  $('gateway-hosts').innerHTML = gateway.hosts.map((host) => gatewayHostPanel(host, data.history)).join('');
 
   const usage = gateway.usage;
   if (usage?.plan) $('gateway-plan').textContent = `ChatGPT ${usage.plan[0].toUpperCase()}${usage.plan.slice(1)} · Codex`;

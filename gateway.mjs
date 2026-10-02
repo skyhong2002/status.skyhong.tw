@@ -1,6 +1,9 @@
-// AI gateway monitoring. The dashboard probes the gateway's tailnet listener itself and
-// merges a report from the sky-mini agent (local listener, model policy, Codex credential,
-// and subscription usage windows). Only sanitized fields ever reach the public snapshot.
+// AI gateway monitoring. Every production host runs its own gateway (see ai-gateway's
+// hosts.json). For each enabled host the dashboard lists models on the listener it can reach
+// and merges the report of the agent running on that host (local listener, alias mapping in
+// its config, Codex credential, inference probe). The subscription usage windows belong to
+// the account, so they are shown once, from whichever agent reads them (sky-mini).
+// Only sanitized fields ever reach the public snapshot.
 
 export const QUOTA_WARN_PERCENT = 90;
 const REPORT_STALE_MS = 3 * 60_000; // the agent reports every 60 s
@@ -60,10 +63,10 @@ export function sanitizeGatewayReport(raw) {
     checkedAt: iso(raw.checkedAt),
     local: {
       up: local.up === true, statusCode: status(local.statusCode), latencyMs: num(local.latencyMs, 0, 60_000),
-      detail: str(local.detail, 160) || '',
+      detail: str(local.detail, 160) || '', target: str(local.target, 80),
       aliasesListed: Object.fromEntries(Object.entries(local.aliasesListed || {}).slice(0, 20).map(([alias, listed]) => [String(alias).slice(0, 60), listed === true])),
     },
-    policy: { revision: str(raw.policy?.revision, 40), aliases: aliasMap(raw.policy?.aliases) },
+    policy: raw.policy ? { revision: str(raw.policy.revision, 40), aliases: aliasMap(raw.policy.aliases) } : null,
     config: { revision: str(raw.config?.revision, 40), aliases: aliasMap(raw.config?.aliases) },
     credential: {
       present: credential.present === true, disabled: credential.disabled === true, refreshable: credential.refreshable === true,
@@ -87,6 +90,29 @@ export function sanitizeGatewayReport(raw) {
   };
 }
 
+const hostName = (value) => (typeof value === 'string' && /^[a-z0-9][a-z0-9.-]{0,62}$/i.test(value) ? value : null);
+
+// Parse AI_GATEWAYS_JSON: [{ name, url?, agent?, probeName?, route?, enabled?, note? }].
+// `url` is the listener as this dashboard reaches it; `agent` is the remote agent id whose
+// report carries that host's gateway block. Without the variable, fall back to the single
+// sky-mini gateway behind AI_GATEWAY_URL.
+export function parseGatewayHosts(json, legacyUrl = '') {
+  let parsed = null;
+  try { parsed = json ? JSON.parse(json) : null; } catch { parsed = null; }
+  if (!Array.isArray(parsed)) {
+    return [{ name: 'sky-mini', url: legacyUrl || null, agent: 'skylabmac', probeName: 'Tailnet listener', route: 'skyhong.tw → sky-mini :8318', enabled: true, note: null }];
+  }
+  return parsed.slice(0, 20).map((host) => ({
+    name: hostName(host?.name),
+    url: typeof host?.url === 'string' && /^https?:\/\//.test(host.url) ? host.url : null,
+    agent: typeof host?.agent === 'string' && /^[a-z0-9-]{1,64}$/i.test(host.agent) ? host.agent : null,
+    probeName: str(host?.probeName, 60) || 'Listener',
+    route: str(host?.route, 120),
+    enabled: host?.enabled !== false,
+    note: str(host?.note, 200),
+  })).filter((host) => host.name);
+}
+
 export function windowLabel(minutes) {
   if (minutes === 10_080) return 'Weekly window';
   if (minutes && minutes % 1_440 === 0) return `${minutes / 1_440}-day window`;
@@ -97,26 +123,73 @@ export function windowLabel(minutes) {
 const age = (at, now) => now - Date.parse(at || '');
 const fresh = (at, now, limit) => { const ms = age(at, now); return Number.isFinite(ms) && ms <= limit; };
 
-// Build the public snapshot. `checks` is the single list of pass/fail items that feeds
-// alerts, the incident count, metrics, and the dashboard's attention list.
-export function buildGatewaySnapshot({ probe, probeConfigured, report, receivedAt, now = Date.now() }) {
-  if (!probeConfigured && !report) return null;
-  const reportFresh = Boolean(report) && fresh(receivedAt, now, REPORT_STALE_MS);
-  const policy = report?.policy || { revision: null, aliases: {} };
+// Build the public snapshot. Each host carries its own `checks`; the top-level `checks` is the
+// single flat list of pass/fail items that feeds alerts, the incident count, metrics, and the
+// dashboard's attention list. Disabled hosts are listed but never produce a check.
+export function buildGatewaySnapshot({ hosts, probes = {}, probeConfigured, reports = {}, now = Date.now() }) {
+  const enabled = hosts.filter((host) => host.enabled);
+  const hasReport = enabled.some((host) => reports[host.agent]?.report);
+  if (!(probeConfigured && enabled.some((host) => host.url)) && !hasReport) return null;
+  const isFresh = (entry) => Boolean(entry?.report) && fresh(entry.receivedAt, now, REPORT_STALE_MS);
+
+  // The policy and the usage windows come from whichever agent reads them (sky-mini's has
+  // model-policy.json and the codex CLI); prefer the most recent report.
+  const byRecency = Object.values(reports).filter((entry) => entry?.report)
+    .sort((a, b) => (Date.parse(b.receivedAt || '') || 0) - (Date.parse(a.receivedAt || '') || 0));
+  const policy = byRecency.find((entry) => entry.report.policy?.revision)?.report.policy || { revision: null, aliases: {} };
+  const usageEntry = byRecency.find((entry) => entry.report.usage);
+
+  const snapshotHosts = hosts.map((host) => host.enabled
+    ? hostSnapshot({ host, probe: probes[host.name], probeConfigured: probeConfigured && Boolean(host.url), entry: reports[host.agent], reportFresh: isFresh(reports[host.agent]), policy, now })
+    : { name: host.name, enabled: false, note: host.note, listeners: [], aliases: [], credential: null, inference: null, checks: [] });
+
+  const checks = snapshotHosts.flatMap((host) => host.checks);
+  let usage = null;
+  if (usageEntry) {
+    const u = usageEntry.report.usage;
+    const sourceFresh = isFresh(usageEntry);
+    const usageFresh = sourceFresh && Boolean(u?.ok) && fresh(u.checkedAt, now, USAGE_STALE_MS);
+    const windows = (u?.windows || []).map((window) => ({ ...window, label: windowLabel(window.windowMinutes), up: window.usedPercent < QUOTA_WARN_PERCENT }));
+    usage = { fresh: usageFresh, checkedAt: u?.checkedAt || null, plan: u?.plan || null, accountMatches: u?.accountMatches ?? null, limitReached: Boolean(u?.limitReached), windows };
+    // A silent agent is already one incident (its host's telemetry check); don't add a second.
+    if (sourceFresh) {
+      const detail = usageFresh ? `Read ${u.checkedAt}` : !u?.checkedAt ? (u?.detail || 'Usage not read yet') : !u.ok ? (u.detail || 'Usage read failed') : `Last read ${u.checkedAt}`;
+      checks.push({ id: 'gateway:quota-telemetry', name: 'AI gateway · subscription usage telemetry', up: usageFresh, detail });
+    }
+    if (usageFresh) {
+      if (u.accountMatches === false) checks.push({ id: 'gateway:quota-account', name: 'AI gateway · usage account', up: false, detail: 'Usage was read for a different account than the gateway credential' });
+      for (const window of windows) {
+        const resets = window.resetsAt ? ` · resets ${window.resetsAt}` : '';
+        checks.push({ id: `gateway:quota:${window.id}`, name: `AI gateway · ${window.label.toLowerCase()}`, up: window.up && !u.limitReached, detail: `${window.usedPercent}% used${resets}` });
+      }
+    }
+  }
+
+  return { configured: true, revision: policy.revision, hosts: snapshotHosts, usage, checks };
+}
+
+function hostSnapshot({ host, probe, probeConfigured, entry, reportFresh, policy, now }) {
+  const report = entry?.report || null;
+  const prefix = `gateway:${host.name}`;
+  const label = (what) => `AI gateway · ${host.name} · ${what}`;
   const checks = [];
   const listeners = [];
 
   if (probeConfigured) {
-    const tailnet = { id: 'tailnet', name: 'Tailnet listener', source: 'skyhong.tw → sky-mini :8318',
+    const listener = { id: 'probe', name: host.probeName, source: host.route || `status → ${host.name}`,
       up: Boolean(probe?.up), latencyMs: probe?.latencyMs ?? null, detail: probe?.detail || 'Not checked yet' };
-    listeners.push(tailnet);
-    checks.push({ id: 'gateway:tailnet', name: 'AI gateway · tailnet listener', up: tailnet.up, detail: tailnet.detail });
+    listeners.push(listener);
+    checks.push({ id: `${prefix}:probe`, name: label(host.probeName.toLowerCase()), up: listener.up, detail: listener.detail });
+  }
+  if (host.agent) {
+    const detail = reportFresh ? `Reported ${entry.receivedAt}` : report ? `${host.agent} agent last reported ${entry.receivedAt}` : `${host.agent} agent has not reported gateway telemetry`;
+    checks.push({ id: `${prefix}:telemetry`, name: label('host telemetry'), up: reportFresh, detail });
   }
   if (reportFresh) {
-    const local = { id: 'local', name: 'Local listener', source: 'sky-mini → 127.0.0.1:8317',
+    const local = { id: 'local', name: 'Local listener', source: `${host.name} → ${report.local.target || 'local'}`,
       up: report.local.up, latencyMs: report.local.latencyMs, detail: report.local.detail };
     listeners.push(local);
-    checks.push({ id: 'gateway:local', name: 'AI gateway · local listener', up: local.up, detail: local.detail });
+    checks.push({ id: `${prefix}:local`, name: label('local listener'), up: local.up, detail: local.detail });
   }
 
   const listed = probeConfigured && probe?.up ? new Set(probe.models) : null;
@@ -128,7 +201,7 @@ export function buildGatewaySnapshot({ probe, probeConfigured, report, receivedA
     if (isListed === false) detail = 'Not listed by the gateway';
     else if (configMatches === false) detail = configModel ? `Gateway maps to ${configModel}; policy says ${model}` : 'Missing from gateway config';
     const up = isListed !== false && configMatches !== false;
-    if (isListed !== null || configMatches !== null) checks.push({ id: `gateway:alias:${alias}`, name: `AI gateway · ${alias} alias`, up, detail });
+    if (isListed !== null || configMatches !== null) checks.push({ id: `${prefix}:alias:${alias}`, name: label(`${alias} alias`), up, detail });
     return { alias, model, listed: isListed, configMatches, up, detail };
   });
   const configRevisionMatches = report?.config?.revision && policy.revision ? report.config.revision === policy.revision : null;
@@ -146,7 +219,7 @@ export function buildGatewaySnapshot({ probe, probeConfigured, report, receivedA
     else if (inferenceAuthFailed) detail = `Upstream rejected the credential (HTTP ${report.inference.statusCode})`;
     const up = c.present && !c.disabled && c.refreshable && !accessExpired && !inferenceAuthFailed;
     credential = { up, account: c.account, plan: c.plan, lastRefreshAt: c.lastRefreshAt, accessExpiresAt: c.accessExpiresAt, detail };
-    if (reportFresh) checks.push({ id: 'gateway:credential', name: 'AI gateway · Codex credential', up, detail });
+    if (reportFresh) checks.push({ id: `${prefix}:credential`, name: label('Codex credential'), up, detail });
   }
 
   let inference = null;
@@ -158,37 +231,19 @@ export function buildGatewaySnapshot({ probe, probeConfigured, report, receivedA
     const detail = !i.ok ? (i.detail || 'Inference failed') : !resolvedMatches ? `${i.alias} answered as ${i.model}; policy says ${expected}` : `${i.alias} → ${i.model}`;
     const isFresh = fresh(i.checkedAt, now, INFERENCE_STALE_MS);
     inference = { up, fresh: isFresh, checkedAt: i.checkedAt, alias: i.alias, model: i.model, latencyMs: i.latencyMs, detail };
-    if (reportFresh && isFresh) checks.push({ id: 'gateway:inference', name: 'AI gateway · inference probe', up, detail });
-  }
-
-  let usage = null;
-  if (report) {
-    const u = report.usage;
-    const usageFresh = reportFresh && Boolean(u?.ok) && fresh(u.checkedAt, now, USAGE_STALE_MS);
-    const windows = (u?.windows || []).map((window) => ({ ...window, label: windowLabel(window.windowMinutes), up: window.usedPercent < QUOTA_WARN_PERCENT }));
-    usage = { fresh: usageFresh, checkedAt: u?.checkedAt || null, plan: u?.plan || null, accountMatches: u?.accountMatches ?? null, limitReached: Boolean(u?.limitReached), windows };
-    const staleDetail = !reportFresh ? 'sky-mini agent has not reported' : !u?.checkedAt ? (u?.detail || 'Usage not read yet') : !u.ok ? (u.detail || 'Usage read failed') : `Last read ${u.checkedAt}`;
-    checks.push({ id: 'gateway:quota-telemetry', name: 'AI gateway · subscription usage telemetry', up: usageFresh, detail: usageFresh ? `Read ${u.checkedAt}` : staleDetail });
-    if (usageFresh) {
-      if (u.accountMatches === false) checks.push({ id: 'gateway:quota-account', name: 'AI gateway · usage account', up: false, detail: 'Usage was read for a different account than the gateway credential' });
-      for (const window of windows) {
-        const resets = window.resetsAt ? ` · resets ${window.resetsAt}` : '';
-        checks.push({ id: `gateway:quota:${window.id}`, name: `AI gateway · ${window.label.toLowerCase()}`, up: window.up && !u.limitReached, detail: `${window.usedPercent}% used${resets}` });
-      }
-    }
+    if (reportFresh && isFresh) checks.push({ id: `${prefix}:inference`, name: label('inference probe'), up, detail });
   }
 
   return {
-    configured: true,
-    revision: policy.revision,
-    configRevisionMatches,
-    reportReceivedAt: receivedAt || null,
-    reportFresh,
-    listeners,
-    aliases,
-    credential,
-    inference,
-    usage,
-    checks,
+    name: host.name, enabled: true, note: host.note, agent: host.agent,
+    reportReceivedAt: entry?.receivedAt || null, reportFresh, configRevisionMatches,
+    listeners, aliases, credential, inference, checks,
   };
+}
+
+// Earlier releases stored one report as { receivedAt, report }; that was sky-mini's agent.
+export function migrateGatewayReports(stored) {
+  if (!stored || typeof stored !== 'object') return {};
+  if (stored.report && typeof stored.report === 'object') return { skylabmac: stored };
+  return stored;
 }
