@@ -22,6 +22,7 @@ export function countIncidents(state, thresholds = {}) {
   }
   for (const cert of state.certificates || []) if (cert.ok && cert.daysRemaining != null && cert.daysRemaining <= certWarn) count += 1;
   for (const domain of state.domains || []) if (domain.ok && domain.daysRemaining != null && domain.daysRemaining <= domainWarn) count += 1;
+  for (const check of state.gateway?.checks || []) if (!check.up) count += 1;
   return count;
 }
 
@@ -39,7 +40,10 @@ export function renderMetrics(state) {
   }
   for (const service of state.services || []) up.push([`kind="service",id="${escapeLabel(service.name)}",name="${escapeLabel(service.name)}"`, service.up ? 1 : 0]);
   for (const heartbeat of state.heartbeats || []) up.push([`kind="heartbeat",id="${escapeLabel(heartbeat.id)}",name="${escapeLabel(heartbeat.name)}"`, heartbeat.up ? 1 : 0]);
+  for (const check of state.gateway?.checks || []) up.push([`kind="gateway",id="${escapeLabel(check.id)}",name="${escapeLabel(check.name)}"`, check.up ? 1 : 0]);
   gauge('sky_up', 'Monitored entity availability (1 up, 0 down)', up);
+  gauge('sky_gateway_quota_used_percent', 'AI gateway subscription usage window, percent used',
+    (state.gateway?.usage?.windows || []).map((w) => [`window="${escapeLabel(w.id)}",minutes="${w.windowMinutes ?? ''}"`, w.usedPercent]));
   gauge('sky_target_latency_ms', 'Last response time in milliseconds', latency);
   gauge('sky_certificate_days_remaining', 'Days until TLS certificate expiry',
     (state.certificates || []).filter((c) => c.ok && c.daysRemaining != null).map((c) => [`host="${escapeLabel(c.host)}"`, c.daysRemaining]));

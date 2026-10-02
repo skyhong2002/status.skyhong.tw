@@ -118,6 +118,75 @@ function renderInfrastructure(data, remote) {
   $('remote-total').textContent = `${remote.filter((item) => item.up).length}/${remote.length}`;
 }
 
+function ago(at) {
+  const ms = Date.now() - Date.parse(at || '');
+  if (!Number.isFinite(ms)) return 'never';
+  const minutes = Math.max(0, Math.round(ms / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
+}
+
+function until(at) {
+  const ms = Date.parse(at || '') - Date.now();
+  if (!Number.isFinite(ms)) return '';
+  const hours = Math.max(0, ms / 3_600_000);
+  return hours >= 24 ? `in ${Math.floor(hours / 24)}d ${Math.round(hours % 24)}h` : hours >= 1 ? `in ${hours.toFixed(1)}h` : `in ${Math.round(hours * 60)}m`;
+}
+
+const localTimes = (text) => String(text || '').replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, (stamp) => new Date(stamp).toLocaleString());
+
+function stateRow(name, sub, up, label) {
+  const cls = up === null ? 'unknown' : up ? '' : 'down';
+  return `<div class="runtime-item"><div><strong>${esc(name)}</strong><span>${esc(sub)}</span></div><b class="runtime-state ${cls}">${esc(label)}</b></div>`;
+}
+
+function renderGateway(data) {
+  const gateway = data.gateway;
+  $('ai-gateway').hidden = !gateway;
+  if (!gateway) return;
+  const drift = gateway.configRevisionMatches === false ? ' · gateway config is on another revision' : '';
+  $('gateway-policy').textContent = gateway.revision ? `Policy ${gateway.revision}${drift}` : 'Policy unknown';
+  const rows = [];
+  for (const listener of gateway.listeners) {
+    const uptime = listener.id === 'tailnet' ? historyFor('gateway:tailnet', data.history).uptime : null;
+    const latency = listener.up && listener.latencyMs != null ? ` · ${number(listener.latencyMs)} ms` : ` · ${listener.detail}`;
+    rows.push(stateRow(listener.name, `${listener.source}${latency}${uptime == null ? '' : ` · ${pct(uptime)} 24h`}`, listener.up, listener.up ? 'Serving' : 'Down'));
+  }
+  for (const alias of gateway.aliases) {
+    const label = alias.up ? 'Mapped' : alias.listed === false ? 'Missing' : 'Drift';
+    rows.push(stateRow(alias.alias, alias.detail, alias.listed === null && alias.configMatches === null ? null : alias.up, label));
+  }
+  const credential = gateway.credential;
+  if (credential) {
+    const plan = credential.plan ? `ChatGPT ${credential.plan[0].toUpperCase()}${credential.plan.slice(1)}` : 'Codex OAuth';
+    const sub = credential.up ? `${plan} · ${credential.account || 'account hidden'} · refreshed ${ago(credential.lastRefreshAt)}` : credential.detail;
+    rows.push(stateRow('Codex credential', sub, gateway.reportFresh ? credential.up : null, !gateway.reportFresh ? 'Stale' : credential.up ? 'Valid' : 'Invalid'));
+  }
+  const inference = gateway.inference;
+  if (inference) {
+    const timing = inference.latencyMs != null ? ` · ${(inference.latencyMs / 1000).toFixed(1)} s` : '';
+    rows.push(stateRow('Inference probe', `${inference.detail}${inference.up ? timing : ''} · ${ago(inference.checkedAt)} · every 30 min`, inference.fresh ? inference.up : null, !inference.fresh ? 'Stale' : inference.up ? 'Answered' : 'Failed'));
+  }
+  const routing = gateway.checks.filter((check) => !check.id.startsWith('gateway:quota'));
+  $('gateway-list').innerHTML = rows.join('') || '<div class="empty">No gateway data yet.</div>';
+  $('gateway-total').textContent = `${routing.filter((check) => check.up).length}/${routing.length}`;
+
+  const usage = gateway.usage;
+  if (usage?.plan) $('gateway-plan').textContent = `ChatGPT ${usage.plan[0].toUpperCase()}${usage.plan.slice(1)} · Codex`;
+  const windows = usage?.windows || [];
+  $('gateway-usage-total').textContent = windows.length ? `${Math.max(...windows.map((window) => window.usedPercent))}%` : '-';
+  const bars = windows.map((window) => {
+    const level = window.usedPercent >= 90 ? 'danger' : window.usedPercent >= 70 ? 'warn' : '';
+    const resets = window.resetsAt ? `resets ${new Date(window.resetsAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })} · ${until(window.resetsAt)}` : '';
+    return `<div class="pool"><div class="pool-head"><strong>${esc(window.label)}</strong><b>${window.usedPercent}% used</b></div><div class="pool-track"><div class="pool-fill ${level}" style="width:${Math.min(100, window.usedPercent)}%"></div></div><div class="pool-foot"><span>${100 - window.usedPercent}% remaining</span><span>${esc(resets)}</span></div></div>`;
+  }).join('');
+  const source = usage?.checkedAt ? `Read ${ago(usage.checkedAt)} via codex app-server, without spending quota.` : 'Usage has not been read yet.';
+  const note = `<p class="gateway-note ${usage?.fresh ? '' : 'stale'}">${esc(usage?.fresh ? source : `Telemetry stale · ${source}`)}${usage?.limitReached ? ' Rate limit reached.' : ''}</p>`;
+  $('gateway-usage').innerHTML = `${bars || '<div class="empty">No usage windows reported.</div>'}${note}`;
+}
+
 function renderJobs(data) {
   const jobs = data.heartbeats || [];
   const deliveries = Object.entries(data.alertDelivery || {}).map(([id, status]) => {
@@ -148,6 +217,7 @@ function renderAttention(data, remote, ai) {
     ...(data.heartbeats || []).filter((job) => !job.up).map((job) => ({ name: job.name, detail: job.detail })),
     ...(data.certificates || []).filter((c) => c.ok && c.daysRemaining != null && c.daysRemaining <= certWarn).map((c) => ({ name: `${c.host} · TLS certificate`, detail: `Expires in ${c.daysRemaining} days` })),
     ...(data.domains || []).filter((d) => d.ok && d.daysRemaining != null && d.daysRemaining <= domainWarn).map((d) => ({ name: `${d.domain} · domain registration`, detail: `Expires in ${d.daysRemaining} days` })),
+    ...(data.gateway?.checks || []).filter((check) => !check.up).map((check) => ({ name: check.name, detail: localTimes(check.detail) })),
     ...(ai && !ai.connected ? [{ name: ai.name, detail: ai.detail }] : []),
     ...(ai?.pools || []).filter((pool) => pool.percent >= 70).map((pool) => ({ name: pool.name, detail: `${pool.percent.toFixed(1)}% of estimated pool used` })),
     ...Object.entries(data.alertDelivery || {}).filter(([, status]) => {
@@ -240,6 +310,7 @@ async function load() {
   renderInfrastructure(data, remote);
   renderJobs(data);
   renderCertificates(data);
+  renderGateway(data);
   renderAi(ai);
   const issues = renderAttention(data, remote, ai);
   renderGlobal(data, remote, ai, issues);

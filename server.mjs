@@ -11,11 +11,13 @@ import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from '
 import { createUptimeStore } from './uptime.mjs';
 import { renderMetrics, renderBadge, renderFeed, countIncidents } from './observability.mjs';
 import { createUsageMonitor } from './usage.mjs';
+import { buildGatewaySnapshot, probeGateway, sanitizeGatewayReport } from './gateway.mjs';
 
 const port = Number(process.env.PORT || 3000);
 const dataDir = process.env.DATA_DIR || './data';
 const historyFile = join(dataDir, 'history.json');
 const agentsFile = join(dataDir, 'agents.json');
+const gatewayFile = join(dataDir, 'gateway.json');
 const intervalMs = Math.max(15, Number(process.env.CHECK_INTERVAL_SECONDS || 60)) * 1000;
 const dockerApiUrl = process.env.DOCKER_API_URL || '';
 const certWarnDays = Number(process.env.CERT_WARN_DAYS || 21);
@@ -26,6 +28,9 @@ const externalHeartbeatUrl = process.env.EXTERNAL_HEARTBEAT_URL || '';
 const usageSyncIntervalMs = Math.max(1, Number(process.env.OPENAI_SYNC_INTERVAL_MINUTES || 10)) * 60 * 1000;
 const maintenanceWindows = parseJson(process.env.MAINTENANCE_JSON, []);
 const publicOrigin = process.env.PUBLIC_ORIGIN || 'https://status.skyhong.tw';
+const gatewayUrl = process.env.AI_GATEWAY_URL || '';
+const gatewayKey = process.env.AI_GATEWAY_KEY || '';
+const gatewayProbeConfigured = Boolean(gatewayUrl && gatewayKey);
 const maxHistoryPoints = 24 * 60;
 
 function activeMaintenance(now = Date.now()) {
@@ -59,7 +64,10 @@ const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
   { id: 'urtube-jobs', name: 'URtube worker & backup', group: 'Operations', url: 'https://urtube.observe.tw', checkUrl: 'https://urtube.observe.tw/readyz', keyword: '"status":"ready"' },
   { id: 'freshrss', name: 'FreshRSS', group: 'Operations', url: 'https://rss.skyhong.tw', keyword: 'FreshRSS' },
 ]);
-const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], alertDelivery: {}, errors: [], history: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
+// The agent's raw gateway report stays out of `state` (which is served publicly); only the
+// sanitized snapshot built from it is published.
+let gatewayReport = null;
+const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, aiUsage: [], gateway: null, alertDelivery: {}, errors: [], history: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
 const usageMonitor = await createUsageMonitor({ dataDir });
 const alerter = await createAlerter({ dataDir });
 const heartbeats = await createHeartbeats({ dataDir });
@@ -205,6 +213,7 @@ async function getAiUsage() {
 async function loadHistory() {
   try { state.history = JSON.parse(await readFile(historyFile, 'utf8')); } catch { state.history = {}; }
   try { state.agents = JSON.parse(await readFile(agentsFile, 'utf8')); } catch { state.agents = {}; }
+  try { gatewayReport = JSON.parse(await readFile(gatewayFile, 'utf8')); } catch { gatewayReport = null; }
 }
 
 async function saveHistory() {
@@ -229,7 +238,10 @@ function recordHistory(items) {
 
 async function refresh() {
   const errors = [];
-  const checkedTargets = await Promise.all(targets.map(checkTarget));
+  const [checkedTargets, gatewayProbe] = await Promise.all([
+    Promise.all(targets.map(checkTarget)),
+    gatewayProbeConfigured ? probeGateway({ baseUrl: gatewayUrl, apiKey: gatewayKey }) : null,
+  ]);
   let services = [];
   try { services = await getDockerServices(); } catch (error) { errors.push('Docker status temporarily unavailable'); }
   let aiUsage = [];
@@ -241,10 +253,13 @@ async function refresh() {
   state.services = services;
   state.aiUsage = aiUsage;
   state.errors = errors;
+  state.gateway = buildGatewaySnapshot({ probe: gatewayProbe, probeConfigured: gatewayProbeConfigured, report: gatewayReport?.report, receivedAt: gatewayReport?.receivedAt });
+  const gatewayItems = state.gateway?.checks || [];
   const heartbeatItems = heartbeats.items();
   state.heartbeats = heartbeatItems;
-  const historyItems = [...checkedTargets, ...services, ...heartbeatItems, ...remoteItems()];
-  recordHistory([...checkedTargets, ...services, ...heartbeatItems]);
+  const gatewayHistory = gatewayItems.filter((item) => item.id === 'gateway:tailnet');
+  const historyItems = [...checkedTargets, ...services, ...heartbeatItems, ...gatewayHistory, ...remoteItems()];
+  recordHistory([...checkedTargets, ...services, ...heartbeatItems, ...gatewayHistory]);
   try { uptimeStore.record(historyItems); state.uptime = uptimeStore.summary(historyItems.map((item) => item.id)); } catch {}
   const alertItems = [
     ...checkedTargets.map((t) => ({ id: `target:${t.id}`, name: t.name, up: t.up, detail: t.statusCode ? `HTTP ${t.statusCode} · ${t.detail}` : t.detail })),
@@ -256,6 +271,7 @@ async function refresh() {
     ...state.certificates.filter((c) => c.ok && c.daysRemaining != null).map((c) => ({ id: `cert:${c.host}`, name: `${c.host} · TLS certificate`, up: c.daysRemaining > certWarnDays, detail: `valid ${c.daysRemaining}d · ${c.issuer || 'cert'}` })),
     ...state.domains.filter((d) => d.ok && d.daysRemaining != null).map((d) => ({ id: `domain:${d.domain}`, name: `${d.domain} · domain registration`, up: d.daysRemaining > domainWarnDays, detail: `expires in ${d.daysRemaining}d` })),
   ];
+  alertItems.push(...gatewayItems);
   if (aiUsage[0]) alertItems.push({ id: 'openai-sync', name: 'OpenAI usage collection', up: aiUsage[0].connected !== false, detail: aiUsage[0].detail || '' });
   state.maintenance = activeMaintenance();
   if (!state.maintenance) { try { await alerter.evaluate(alertItems); } catch {} }
@@ -319,8 +335,10 @@ async function ingestAgent(request, response, agentId) {
       statusCode: Number.isInteger(item.statusCode) && item.statusCode >= 100 && item.statusCode <= 599 ? item.statusCode : null,
       latencyMs: Number.isFinite(item.latencyMs) ? Math.max(0, Math.min(60000, item.latencyMs)) : 0,
     })).filter((item) => item.id && item.name) };
+    const gateway = payload.gateway === undefined ? null : sanitizeGatewayReport(payload.gateway);
+    if (gateway) gatewayReport = { receivedAt: state.agents[agentId].receivedAt, report: gateway };
     recordHistory(remoteItems());
-    await Promise.all([saveHistory(), saveJson(agentsFile, state.agents)]);
+    await Promise.all([saveHistory(), saveJson(agentsFile, state.agents), gateway ? saveJson(gatewayFile, gatewayReport) : null]);
     json(response, { ok: true });
   } catch (error) {
     response.writeHead(400);

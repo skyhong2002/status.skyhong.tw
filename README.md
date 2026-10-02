@@ -26,6 +26,15 @@ The interface labels the quota view `預估免費池使用量` because the Usage
 
 Set `DISCORD_WEBHOOK_URL` to enable deduplicated alerts at 70%, 85%, and 95% for each pool. No webhook means the dashboard still shows the thresholds without sending messages.
 
+## AI gateway
+
+The dashboard watches the shared OpenAI-compatible gateway (CLIProxyAPI on sky-mini; see `~/Projects/ai-gateway`). Two sources feed the `AI gateway` section:
+
+- The backend lists models on the tailnet listener (`AI_GATEWAY_URL`, default `http://100.71.224.62:8318/v1`) every check, authenticated with the gateway's `status` client key in `AI_GATEWAY_KEY`. The probe is skipped when the key is unset. Listing models spends no quota.
+- The SkyLabMac agent adds a `gateway` block to its report: the local listener (`127.0.0.1:8317`, key read from `~/.config/ai-gateway/clients.env`), the alias policy in `model-policy.json` against the mapping `apply.py` wrote into the gateway config, a token-free summary of the Codex OAuth credential, and the subscription usage windows read from `codex app-server` (`account/rateLimits/read`, every 5 minutes, no model turn). Every 30 minutes it sends one tiny `sky-fast` request to confirm the alias answers with the policy model. Its cache lives in `~/.config/sky-status-gateway.json`; set `"gateway": false` in the agent config to disable the block.
+
+The server re-validates the block, masks the account address, and publishes only the sanitized snapshot. Each check — tailnet and local listener, each alias, the credential, the inference probe, usage telemetry freshness, and each usage window at or above 90% — is an ordinary incident item: it alerts, counts toward the badge and `sky_incidents_total`, and is exported as `sky_up{kind="gateway"}` alongside `sky_gateway_quota_used_percent`. When the agent stops reporting, its checks collapse into a single stale-telemetry incident. Gateway incidents never affect `/readyz`.
+
 ## Long-term availability
 
 Alongside the rolling 24-hour history, each check is folded into per-day uptime and latency aggregates in `/data/uptime.sqlite`, retained for 90 days. The dashboard shows the actual observed-day coverage until enough data exists for a complete 7-, 30-, or 90-day window, so a new deployment does not present partial history as a full SLA period.

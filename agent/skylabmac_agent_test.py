@@ -10,6 +10,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from skylabmac_agent import (
     bamboo_discord_status,
+    codex_credential,
+    due,
+    mask_account,
+    parse_gateway_config,
+    summarize_rate_limits,
     http_probe,
     launchd_status,
     load_launchd_job_state,
@@ -121,6 +126,74 @@ class LaunchdStatusTest(unittest.TestCase):
             save_launchd_job_state({"example.job": 1}, path)
             self.assertEqual(load_launchd_job_state(path), {"example.job": 1})
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+class GatewayReportTest(unittest.TestCase):
+    def test_parses_alias_block_and_revision_from_gateway_config(self):
+        text = """# oauth-model-alias:
+#   codex:
+#     - name: "gpt-5"
+#       alias: "g5"
+api-keys:
+  - "k"  # status
+
+# Managed by ai-gateway/apply.py, policy revision 2026-10-02
+oauth-model-alias:
+  codex:
+    - name: "gpt-6-luna"
+      alias: "sky-fast"
+    - name: "gpt-6.1-sol"
+      alias: "sky-quality"
+other: true
+"""
+        self.assertEqual(parse_gateway_config(text), {
+            "revision": "2026-10-02",
+            "aliases": {"sky-fast": "gpt-6-luna", "sky-quality": "gpt-6.1-sol"},
+        })
+
+    def test_credential_summary_masks_the_account_and_drops_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "codex-abc-ops@example.com-pro.json").write_text(json.dumps({
+                "access_token": "secret-a", "refresh_token": "secret-r", "email": "ops@example.com",
+                "account_id": "acct-1", "disabled": False,
+                "expired": "2026-10-12T19:42:20+08:00", "last_refresh": "2026-10-02T19:42:20+08:00",
+            }))
+            summary, identity = codex_credential(Path(directory))
+        self.assertEqual(summary["account"], "o••@example.com")
+        self.assertEqual(summary["plan"], "pro")
+        self.assertEqual(summary["accessExpiresAt"], "2026-10-12T11:42:20Z")
+        self.assertTrue(summary["present"] and summary["refreshable"])
+        self.assertNotIn("secret", json.dumps(summary))
+        self.assertEqual(identity["accountId"], "acct-1")
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(codex_credential(Path(directory)), ({"present": False}, None))
+
+    def test_rate_limit_windows_and_account_match(self):
+        now = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
+        rate_limits = {
+            "accountId": "acct-1", "ordinaryUsageAllowed": True,
+            "rateLimitsByLimitId": {"codex": {
+                "primary": {"usedPercent": 62, "windowDurationMins": 10080, "resetsAt": 1791054021},
+                "secondary": {"usedPercent": 12, "windowDurationMins": 300, "resetsAt": 1790960000},
+                "planType": "pro", "rateLimitReachedType": None,
+            }},
+        }
+        usage = summarize_rate_limits(rate_limits, {}, {"accountId": "acct-1"}, now)
+        self.assertTrue(usage["ok"])
+        self.assertTrue(usage["accountMatches"])
+        self.assertFalse(usage["limitReached"])
+        self.assertEqual([w["id"] for w in usage["windows"]], ["primary", "secondary"])
+        self.assertEqual(usage["windows"][0]["resetsAt"], "2026-10-03T19:00:21Z")
+        other = summarize_rate_limits(rate_limits, {}, {"accountId": "acct-2"}, now)
+        self.assertFalse(other["accountMatches"])
+        self.assertFalse(summarize_rate_limits({"rateLimits": {}}, {}, None, now)["ok"])
+
+    def test_inference_is_due_only_after_its_interval(self):
+        now = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
+        self.assertTrue(due(None, 1800, now))
+        self.assertFalse(due({"checkedAt": "2026-10-02T11:45:00Z"}, 1800, now))
+        self.assertTrue(due({"checkedAt": "2026-10-02T11:29:59Z"}, 1800, now))
+        self.assertEqual(mask_account("ops@example.com"), "o••@example.com")
 
 
 if __name__ == "__main__":
