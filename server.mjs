@@ -9,7 +9,7 @@ import { createHeartbeats } from './heartbeats.mjs';
 import { buildHealthSnapshot, buildReadinessSnapshot } from './health.mjs';
 import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from './probes.mjs';
 import { createUptimeStore } from './uptime.mjs';
-import { renderMetrics, renderBadge, renderFeed, countIncidents } from './observability.mjs';
+import { renderMetrics, renderBadge, renderFeed, countIncidents, PROBE_AGENT_IDS } from './observability.mjs';
 import { buildGatewaySnapshot, probeGateway, sanitizeGatewayReport } from './gateway.mjs';
 
 const port = Number(process.env.PORT || 3000);
@@ -278,7 +278,7 @@ function agentAuthorized(request) {
 
 function remoteItems() {
   const now = Date.now();
-  return Object.entries(state.agents).filter(([id]) => id !== 'omni-probe').flatMap(([agentId, agent]) => {
+  return Object.entries(state.agents).filter(([id]) => !PROBE_AGENT_IDS.has(id)).flatMap(([agentId, agent]) => {
     const stale = !agent.receivedAt || now - new Date(agent.receivedAt).getTime() > intervalMs * 3;
     return (agent.items || []).map((item) => ({
       ...item,

@@ -57,3 +57,11 @@ test('feed renders incidents as RSS items with escaping', () => {
   assert.match(feed, /boom &lt;tag&gt;/);
   assert.match(feed, /X &amp; Y — Recovered/);
 });
+
+test('probe-only agents do not count as host incidents', () => {
+  const stale = new Date(Date.now() - 3_600_000).toISOString();
+  const state = { agents: { 'omni-probe': { receivedAt: stale, items: [{ id: 'omni-main-web', up: true }] } } };
+  assert.equal(countIncidents(state), 0);
+  state.agents.skylabmac = { receivedAt: stale, items: [{ id: 'disk-root', up: true }] };
+  assert.equal(countIncidents(state), 1);
+});
