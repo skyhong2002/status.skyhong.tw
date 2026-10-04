@@ -4,7 +4,12 @@ A public operations dashboard for services hosted on `skyhong.tw`.
 
 It checks configured public endpoints, reads Docker task state through a narrowly scoped read-only socket proxy, and retains a rolling 24-hour availability history. The dashboard is intentionally public, while credentials and API keys remain server-side and are never returned to the browser.
 
-The public interface uses a Kener-inspired status banner, monitor grouping, and segmented uptime history, with a compact infrastructure treatment informed by Gatus. See `THIRD_PARTY_NOTICES.md` for attribution and license details.
+The public interface uses a Kener-inspired status banner, monitor grouping, and segmented uptime history, with a compact infrastructure treatment informed by Gatus. It follows the system colour scheme and has a manual light/dark toggle. See `THIRD_PARTY_NOTICES.md` for attribution and license details.
+
+## API
+
+- `GET /api/status` — the dashboard snapshot. The 24-hour history is published as `history24h`: per monitor, a 48-character string (one 30-minute bin each; `0` no data, `1` all checks passed, `2` at least one failure) plus the 24-hour uptime percentage and check count. This keeps the payload around 70 KB.
+- `GET /api/history` — the raw `{ t, up }` points behind that summary (about 1,440 per monitor), split out because they are several megabytes.
 
 ## Add a product
 

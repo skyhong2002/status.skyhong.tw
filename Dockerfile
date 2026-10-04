@@ -10,6 +10,7 @@ COPY probes.mjs ./
 COPY heartbeats.mjs ./
 COPY health.mjs ./
 COPY uptime.mjs ./
+COPY history.mjs ./
 COPY observability.mjs ./
 COPY gateway.mjs ./
 COPY agent ./agent

@@ -11,6 +11,7 @@ import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from '
 import { createUptimeStore } from './uptime.mjs';
 import { renderMetrics, renderBadge, renderFeed, countIncidents, PROBE_AGENT_IDS } from './observability.mjs';
 import { buildGatewaySnapshot, migrateGatewayReports, parseGatewayHosts, probeGateway, sanitizeGatewayReport } from './gateway.mjs';
+import { pruneHistory, recordHistory as appendHistory, summarizeHistory } from './history.mjs';
 
 const port = Number(process.env.PORT || 3000);
 const dataDir = process.env.DATA_DIR || './data';
@@ -30,7 +31,6 @@ const gatewayHosts = parseGatewayHosts(process.env.AI_GATEWAYS_JSON, process.env
 // Every gateway accepts the same client keys, so one `status` key probes them all.
 const gatewayKey = process.env.AI_GATEWAY_KEY || '';
 const gatewayProbeConfigured = Boolean(gatewayKey);
-const maxHistoryPoints = 24 * 60;
 
 function activeMaintenance(now = Date.now()) {
   return (Array.isArray(maintenanceWindows) ? maintenanceWindows : []).find((window) => {
@@ -66,7 +66,9 @@ const targets = parseJson(process.env.STATUS_TARGETS_JSON, [
 // Agents' gateway reports, keyed by agent id, stay out of `state` (which is served publicly);
 // only the sanitized snapshot built from them is published.
 let gatewayReports = {};
-const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, gateway: null, alertDelivery: {}, errors: [], history: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
+// Raw 24h history stays server-side; `state` (served publicly) only carries the binned summary.
+let history = {};
+const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, gateway: null, alertDelivery: {}, errors: [], history24h: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
 const alerter = await createAlerter({ dataDir });
 const heartbeats = await createHeartbeats({ dataDir });
 const uptimeStore = await createUptimeStore({ dataDir });
@@ -205,14 +207,15 @@ async function getDockerServices() {
 }
 
 async function loadHistory() {
-  try { state.history = JSON.parse(await readFile(historyFile, 'utf8')); } catch { state.history = {}; }
+  try { history = pruneHistory(JSON.parse(await readFile(historyFile, 'utf8'))); } catch { history = {}; }
+  state.history24h = summarizeHistory(history);
   try { state.agents = JSON.parse(await readFile(agentsFile, 'utf8')); } catch { state.agents = {}; }
   try { gatewayReports = migrateGatewayReports(JSON.parse(await readFile(gatewayFile, 'utf8'))); } catch { gatewayReports = {}; }
 }
 
 async function saveHistory() {
   await mkdir(dataDir, { recursive: true });
-  await saveJson(historyFile, state.history);
+  await saveJson(historyFile, history);
 }
 
 async function saveJson(file, value) {
@@ -222,12 +225,8 @@ async function saveJson(file, value) {
 }
 
 function recordHistory(items) {
-  const now = Date.now();
-  for (const item of items) {
-    const points = state.history[item.id] || [];
-    points.push({ t: now, up: item.up });
-    state.history[item.id] = points.filter((point) => point.t > now - 24 * 60 * 60 * 1000).slice(-maxHistoryPoints);
-  }
+  appendHistory(history, items);
+  state.history24h = summarizeHistory(history);
 }
 
 async function refresh() {
@@ -267,6 +266,7 @@ async function refresh() {
   state.maintenance = activeMaintenance();
   if (!state.maintenance) { try { await alerter.evaluate(alertItems); } catch {} }
   state.alertDelivery = { incident: alerter.deliveryStatus() };
+  pruneHistory(history);
   await saveHistory();
   if (externalHeartbeatUrl) {
     try { void fetch(externalHeartbeatUrl, { signal: AbortSignal.timeout(10_000) }).catch(() => {}); } catch {}
@@ -423,6 +423,8 @@ const server = createServer(async (request, response) => {
     return testAlerts(request, response);
   }
   if (url.pathname === '/api/status') return json(response, state);
+  // Raw points, split from /api/status so the dashboard payload stays small.
+  if (url.pathname === '/api/history') return json(response, history);
   if (url.pathname === '/livez') return json(response, { ok: true });
   if (url.pathname === '/readyz') {
     const readiness = buildReadinessSnapshot({ state, intervalMs });
