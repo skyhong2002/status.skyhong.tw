@@ -286,6 +286,11 @@ function gatewayHostPanel(host, history) {
       const label = alias.up ? 'Mapped' : alias.listed === false ? 'Missing' : 'Drift';
       rows.push(row(alias.alias, alias.detail, alias.listed === null && alias.configMatches === null ? null : alias.up, label, { tag: 'alias' }));
     }
+    for (const account of host.accounts?.list || []) {
+      const state = !host.reportFresh || !host.accounts.fresh ? null : account.up;
+      const badge = state === null ? 'Stale' : !account.up ? (account.loginRejected ? 'Re-login' : 'Expired') : account.remainingPercent === 0 ? 'Used up' : 'Valid';
+      rows.push(row(account.label, account.detail, state, badge, { tag: account.mirror === 'peer' ? 'mirror' : 'login' }));
+    }
     if (host.credential) {
       const credential = host.credential;
       const plan = credential.plan ? `ChatGPT ${credential.plan[0].toUpperCase()}${credential.plan.slice(1)}` : 'Codex OAuth';

@@ -1,14 +1,20 @@
 // AI gateway monitoring. Every production host runs its own gateway (see ai-gateway's
 // hosts.json). For each enabled host the dashboard lists models on the listener it can reach
 // and merges the report of the agent running on that host (local listener, alias mapping in
-// its config, Codex credential, inference probe). The subscription usage windows belong to
+// its config, account logins, inference probe). The subscription usage windows belong to
 // the account, so they are shown once, from whichever agent reads them (sky-mini).
+// Account logins come from ai-gateway's account_failover.py: sky-mini owns every login, and
+// peers run access mirrors of them, so a rejected login is reported (once) by the host that
+// owns it and a peer only reports mirrors that stopped being refreshed.
 // Only sanitized fields ever reach the public snapshot.
 
 export const QUOTA_WARN_PERCENT = 90;
 const REPORT_STALE_MS = 3 * 60_000; // the agent reports every 60 s
 const USAGE_STALE_MS = 20 * 60_000; // the agent re-reads usage every 5 min
 const INFERENCE_STALE_MS = 90 * 60_000; // the agent runs one tiny inference every 30 min
+const ACCOUNT_STATE_STALE_MS = 10 * 60_000; // account_failover.py runs every minute
+const PROVIDERS = { codex: 'Codex', claude: 'Claude' };
+const MIRROR_KINDS = ['t3', 'peer'];
 
 export async function probeGateway({ baseUrl, apiKey, fetchImpl = fetch, timeoutMs = 8_000 }) {
   const startedAt = Date.now();
@@ -59,6 +65,7 @@ export function sanitizeGatewayReport(raw) {
   const credential = raw.credential || {};
   const inference = raw.inference || null;
   const usage = raw.usage || null;
+  const accounts = raw.accounts && typeof raw.accounts === 'object' ? raw.accounts : null;
   return {
     checkedAt: iso(raw.checkedAt),
     local: {
@@ -77,6 +84,18 @@ export function sanitizeGatewayReport(raw) {
       checkedAt: iso(inference.checkedAt), ok: inference.ok === true, statusCode: status(inference.statusCode),
       alias: str(inference.alias, 60), model: str(inference.model, 80), latencyMs: num(inference.latencyMs, 0, 600_000),
       detail: str(inference.detail, 160) || '',
+    } : null,
+    accounts: accounts ? {
+      checkedAt: iso(accounts.checkedAt),
+      list: (Array.isArray(accounts.accounts) ? accounts.accounts : []).slice(0, 20).map((account) => ({
+        id: typeof account?.id === 'string' && /^[a-f0-9]{6,16}$/.test(account.id) ? account.id : null,
+        provider: Object.hasOwn(PROVIDERS, account?.provider) ? account.provider : null,
+        account: maskAccount(account?.account), remainingPercent: num(account?.remainingPercent, 0, 100),
+        priority: Number.isInteger(account?.priority) ? account.priority : null, disabled: account?.disabled === true,
+        mirror: MIRROR_KINDS.includes(account?.mirror) ? account.mirror : null,
+        loginRejected: account?.loginRejected === true, mirrorExpired: account?.mirrorExpired === true,
+        error: str(account?.error, 120),
+      })).filter((account) => account.id && account.provider),
     } : null,
     usage: usage && typeof usage === 'object' ? {
       checkedAt: iso(usage.checkedAt), ok: usage.ok === true, detail: str(usage.detail, 160) || '',
@@ -206,8 +225,12 @@ function hostSnapshot({ host, probe, probeConfigured, entry, reportFresh, policy
   });
   const configRevisionMatches = report?.config?.revision && policy.revision ? report.config.revision === policy.revision : null;
 
+  const accounts = report?.accounts ? accountSnapshot(report.accounts, now) : null;
+  if (accounts && reportFresh) checks.push(...accountChecks(accounts, prefix, label));
+
+  // Superseded by the account logins when the host reports them; older agents still send only this.
   let credential = null;
-  if (report) {
+  if (report && !accounts) {
     const c = report.credential;
     const accessExpired = Number.isFinite(Date.parse(c.accessExpiresAt || '')) && Date.parse(c.accessExpiresAt) < now;
     const inferenceAuthFailed = report.inference && !report.inference.ok && [401, 403].includes(report.inference.statusCode);
@@ -237,8 +260,47 @@ function hostSnapshot({ host, probe, probeConfigured, entry, reportFresh, policy
   return {
     name: host.name, enabled: true, note: host.note, agent: host.agent,
     reportReceivedAt: entry?.receivedAt || null, reportFresh, configRevisionMatches,
-    listeners, aliases, credential, inference, checks,
+    listeners, aliases, credential, accounts, inference, checks,
   };
+}
+
+function accountSnapshot(raw, now) {
+  const list = raw.list.map((account) => {
+    const provider = PROVIDERS[account.provider];
+    const code = account.error?.match(/HTTP (\d{3})/)?.[1];
+    let problem = null;
+    if (account.mirror === 'peer') {
+      if (account.mirrorExpired) problem = 'Mirror expired; sky-mini has not delivered a fresh token';
+    } else if (account.loginRejected) {
+      problem = `Login rejected${code ? ` (HTTP ${code})` : ''}; log in again in sky-mini's CPAMC → OAuth 登入`;
+    } else if (account.mirrorExpired) {
+      problem = 'T3 mirror expired; waiting for T3 to renew the login';
+    }
+    const quota = account.remainingPercent == null ? 'Quota unknown'
+      : account.remainingPercent <= 0 ? 'Quota used up · resumes when the window resets' : `${account.remainingPercent}% quota left`;
+    const detail = problem || (account.error ? `${quota} · last check: ${account.error}` : quota);
+    return { ...account, label: `${provider} · ${account.account || 'account hidden'}`, up: !problem, detail };
+  });
+  return { fresh: fresh(raw.checkedAt, now, ACCOUNT_STATE_STALE_MS), checkedAt: raw.checkedAt, list };
+}
+
+// A login that needs a human is one check per account, so its alert names the account and
+// recovers on its own. Exhausted quota recovers by itself and never alerts.
+function accountChecks(accounts, prefix, label) {
+  const detail = accounts.fresh ? `Checked ${accounts.checkedAt}`
+    : accounts.checkedAt ? `account_failover.py last ran ${accounts.checkedAt}` : 'account_failover.py has not run';
+  const checks = [{ id: `${prefix}:account-policy`, name: label('account policy'), up: accounts.fresh, detail }];
+  if (!accounts.fresh) return checks;
+  for (const account of accounts.list.filter((a) => a.mirror !== 'peer')) {
+    checks.push({ id: `${prefix}:login:${account.id}`, name: label(`${account.label} login`), up: account.up, detail: account.detail });
+  }
+  const mirrors = accounts.list.filter((a) => a.mirror === 'peer');
+  if (mirrors.length) {
+    const expired = mirrors.filter((a) => !a.up);
+    checks.push({ id: `${prefix}:mirrors`, name: label('account mirrors'), up: expired.length === 0,
+      detail: expired.length ? `${expired.map((a) => a.label).join(', ')}: mirror expired; sky-mini has not delivered a fresh token` : `${mirrors.length} mirrors current` });
+  }
+  return checks;
 }
 
 // Earlier releases stored one report as { receivedAt, report }; that was sky-mini's agent.

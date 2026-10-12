@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """AI gateway telemetry for the status dashboard: one host's CLIProxyAPI listener, the alias
-mapping apply.py wrote into its config, a token-free summary of its Codex OAuth credential, a
-rare tiny inference, and (where the codex CLI lives) the account's subscription usage windows.
+mapping apply.py wrote into its config, a token-free summary of its Codex OAuth credential, the
+per-account login state from ai-gateway's account_failover.py, a rare tiny inference, and (where
+the codex CLI lives) the account's subscription usage windows.
 
 Imported by skylabmac_agent.py on sky-mini. On a Linux gateway host, run it directly and it
 prints the gateway block as JSON (see vps_host_reporter.sh); the client key comes from the
@@ -9,6 +10,7 @@ AI_GATEWAY_KEY environment variable and never appears in argv or the output.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -28,6 +30,7 @@ GATEWAY_POLICY_PATH = Path(os.path.expanduser("~/Projects/ai-gateway/model-polic
 GATEWAY_CONFIG_PATH = Path("/opt/homebrew/etc/cliproxyapi.conf")
 GATEWAY_AUTH_DIR = Path(os.path.expanduser("~/.cli-proxy-api"))
 GATEWAY_STATE_PATH = Path(os.path.expanduser("~/.config/sky-status-gateway.json"))
+ACCOUNT_STATE_PATH = Path(os.path.expanduser("~/.config/ai-gateway/account-failover.json"))
 # Listing models is free; inference spends subscription quota, so keep it rare and tiny.
 GATEWAY_INFERENCE_INTERVAL_SECONDS = 30 * 60
 GATEWAY_INFERENCE_ALIAS = "sky-fast"
@@ -137,6 +140,39 @@ def codex_credential(auth_dir=GATEWAY_AUTH_DIR):
         "lastRefreshAt": stamp(data.get("last_refresh")),
     }
     return summary, {"email": data.get("email"), "accountId": data.get("account_id")}
+
+
+def account_health(path=ACCOUNT_STATE_PATH):
+    """Per-account login state written by ai-gateway's account_failover.py, without tokens.
+
+    The id is a hash, so the dashboard can key alerts on an account without seeing its address.
+    """
+    try:
+        state = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    checked = state.get("checked_at")
+    accounts = []
+    for provider, pool in (state.get("pools") or {}).items():
+        for email, row in (pool or {}).items():
+            quota = row.get("quota") or {}
+            accounts.append({
+                "id": hashlib.sha256(f"{provider}:{email}".encode()).hexdigest()[:10],
+                "provider": provider,
+                "account": mask_account(email),
+                "remainingPercent": quota.get("remaining_percent"),
+                "priority": row.get("priority"),
+                "disabled": row.get("disabled") is True,
+                "mirror": row.get("mirror"),
+                "loginRejected": row.get("login_rejected") is True,
+                "mirrorExpired": row.get("mirror_expired") is True,
+                # account_failover.py logs only status codes and exception types here.
+                "error": row.get("error"),
+            })
+    return {
+        "checkedAt": iso_utc(datetime.fromtimestamp(checked, timezone.utc)) if isinstance(checked, (int, float)) else None,
+        "accounts": accounts,
+    }
 
 
 def codex_executable():
@@ -259,7 +295,7 @@ def listener_target(base_url):
 
 def gateway_report(now=None, state_path=GATEWAY_STATE_PATH, *, key=None, base_url=GATEWAY_BASE_URL,
                    config_path=GATEWAY_CONFIG_PATH, auth_dir=GATEWAY_AUTH_DIR, policy_path=GATEWAY_POLICY_PATH,
-                   read_usage=True):
+                   accounts_path=ACCOUNT_STATE_PATH, read_usage=True):
     """Collect one host's gateway block. Secrets never leave this function.
 
     The subscription usage windows belong to the account, not the host, so only one host
@@ -320,6 +356,9 @@ def gateway_report(now=None, state_path=GATEWAY_STATE_PATH, *, key=None, base_ur
         "credential": credential,
         "inference": cache.get("inference"),
     }
+    accounts = account_health(accounts_path)
+    if accounts is not None:
+        report["accounts"] = accounts
     if policy:
         report["policy"] = {"revision": policy.get("revision"), "aliases": policy.get("aliases") or {}}
     if read_usage:
@@ -333,10 +372,12 @@ def main():
     parser.add_argument("--config", default=str(GATEWAY_CONFIG_PATH), help="CLIProxyAPI config written by apply.py")
     parser.add_argument("--auth-dir", default=str(GATEWAY_AUTH_DIR))
     parser.add_argument("--state", default=str(GATEWAY_STATE_PATH), help="cache for the inference result")
+    parser.add_argument("--accounts-state", default=str(ACCOUNT_STATE_PATH), help="account_failover.py state file")
     args = parser.parse_args()
     report = gateway_report(state_path=Path(os.path.expanduser(args.state)), key=os.environ.get("AI_GATEWAY_KEY", ""),
                             base_url=args.base_url, config_path=os.path.expanduser(args.config),
-                            auth_dir=os.path.expanduser(args.auth_dir), policy_path=None, read_usage=False)
+                            auth_dir=os.path.expanduser(args.auth_dir), policy_path=None,
+                            accounts_path=os.path.expanduser(args.accounts_state), read_usage=False)
     json.dump(report, sys.stdout)
     print()
     return 0

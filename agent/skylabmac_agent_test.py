@@ -9,6 +9,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from gateway_telemetry import (
+    account_health,
     codex_credential,
     due,
     gateway_report,
@@ -199,6 +200,23 @@ other: true
         self.assertTrue(due({"checkedAt": "2026-10-02T11:29:59Z"}, 1800, now))
         self.assertEqual(mask_account("ops@example.com"), "o••@example.com")
 
+    def test_account_health_masks_accounts_and_keeps_login_state(self):
+        state = {"checked_at": 1791820000, "pools": {
+            "codex": {"gpt@nycu.one": {"priority": -100, "quota": {"remaining_percent": 0}, "mirror": None,
+                                       "login_rejected": True, "error": "login rejected (HTTP 401); re-login required"}},
+            "claude": {"gpt@nycu.one": {"priority": 100, "quota": {"remaining_percent": 72}, "mirror": "peer"}}}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "account-failover.json")
+            path.write_text(json.dumps(state))
+            health = account_health(path)
+            self.assertIsNone(account_health(Path(directory, "absent.json")))
+        codex, claude = health["accounts"]
+        self.assertEqual(health["checkedAt"], "2026-10-12T15:46:40Z")
+        self.assertTrue(codex["loginRejected"])
+        self.assertEqual((claude["mirror"], claude["remainingPercent"]), ("peer", 72))
+        self.assertNotEqual(codex["id"], claude["id"], "the same address in two pools is two accounts")
+        self.assertNotIn("gpt@nycu.one", json.dumps(health))
+
     def test_remote_host_report_uses_its_own_listener_config_and_credential(self):
         seen = []
 
@@ -231,7 +249,9 @@ other: true
             Path(directory, "codex-abc-ops@example.com-pro.json").write_text(json.dumps({"refresh_token": "r", "email": "ops@example.com"}))
             report = gateway_report(state_path=Path(directory, "state.json"), key="k",
                                     base_url=f"http://127.0.0.1:{server.server_port}/v1", config_path=config,
-                                    auth_dir=directory, policy_path=None, read_usage=False)
+                                    auth_dir=directory, policy_path=None, accounts_path=Path(directory, "absent.json"),
+                                    read_usage=False)
+        self.assertNotIn("accounts", report)
         self.assertEqual(report["local"]["aliasesListed"], {"sky-fast": True, "sky-quality": True})
         self.assertEqual(report["local"]["target"], f"127.0.0.1:{server.server_port}")
         self.assertEqual(report["config"]["revision"], "2026-10-02")

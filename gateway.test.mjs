@@ -155,6 +155,50 @@ test('a failure on one host is attributed to that host only', () => {
   assert.deepEqual(failingIds(fleetSnapshot({ reports: { skylabmac: { receivedAt: minutesAgo(10), report: rawReport() } } })), ['gateway:sky-mini:telemetry']);
 });
 
+const accountsBlock = (accounts, checkedAt = minutesAgo(1)) => ({ checkedAt, accounts: accounts.map((a, i) => ({
+  id: `abcdef0${i}`, provider: 'codex', account: 'o••@example.com', remainingPercent: 50, priority: 100, mirror: null, ...a })) });
+
+test('account logins: a rejected login alerts once, on the host that owns it', () => {
+  const rejected = { loginRejected: true, remainingPercent: 0, priority: -100, error: 'login rejected (HTTP 401); re-login required' };
+  const snap = fleetSnapshot({ reports: {
+    skylabmac: { receivedAt: minutesAgo(0), report: rawReport({ accounts: accountsBlock([rejected, { provider: 'claude' }]) }) },
+    // The peer's mirror of the same dead login is rejected too, but the peer only reports mirror freshness.
+    vps: { receivedAt: minutesAgo(0), report: vpsReport({ accounts: accountsBlock([{ ...rejected, mirror: 'peer' }, { provider: 'claude', mirror: 'peer' }]) }) },
+  } });
+  assert.deepEqual(failingIds(snap), ['gateway:sky-mini:login:abcdef00']);
+  const check = snap.checks.find((c) => c.id === 'gateway:sky-mini:login:abcdef00');
+  assert.equal(check.name, 'AI gateway · sky-mini · Codex · o••@example.com login');
+  assert.match(check.detail, /HTTP 401.*OAuth 登入/);
+  assert.equal(snap.checks.find((c) => c.id === 'gateway:skyhong-blog:mirrors').detail, '2 mirrors current');
+  // Hosts that report account logins drop the legacy single-credential check.
+  assert.ok(!snap.checks.some((c) => c.id.endsWith(':credential')));
+});
+
+test('account logins: used-up quota never alerts; expired mirrors and a stalled policy do', () => {
+  const exhausted = rawReport({ accounts: accountsBlock([{ remainingPercent: 0, priority: -100 }]) });
+  const snap = snapshot({ report: exhausted });
+  assert.deepEqual(failing(snap), []);
+  assert.match(snap.hosts[0].accounts.list[0].detail, /used up/);
+  const t3 = rawReport({ accounts: accountsBlock([{ mirror: 't3', mirrorExpired: true }]) });
+  assert.deepEqual(failing(snapshot({ report: t3 })), ['login:abcdef00']);
+  const peer = vpsReport({ accounts: accountsBlock([{ mirror: 'peer', mirrorExpired: true, provider: 'claude' }]) });
+  const fleetSnap = fleetSnapshot({ reports: { vps: { receivedAt: minutesAgo(0), report: peer } } });
+  assert.deepEqual(failingIds(fleetSnap), ['gateway:skyhong-blog:mirrors']);
+  assert.match(fleetSnap.checks.find((c) => c.id === 'gateway:skyhong-blog:mirrors').detail, /^Claude · o••@example\.com: mirror expired/);
+  // A stopped account_failover.py is one incident; its stale per-account state is not re-judged.
+  const stale = rawReport({ accounts: accountsBlock([{ loginRejected: true }], minutesAgo(30)) });
+  assert.deepEqual(failing(snapshot({ report: stale })), ['account-policy']);
+});
+
+test('account logins: unexpected fields are dropped and addresses stay masked', () => {
+  const raw = rawReport({ accounts: { checkedAt: minutesAgo(1), accounts: [
+    { id: 'abcdef00', provider: 'codex', account: 'ops@example.com', mirror: 'evil', token: 'secret' },
+    { id: '../x', provider: 'codex' }, { id: 'abcdef01', provider: 'gemini' }] } });
+  const list = sanitizeGatewayReport(raw).accounts.list;
+  assert.equal(list.length, 1);
+  assert.deepEqual([list[0].account, list[0].mirror, 'token' in list[0]], ['o••@example.com', null, false]);
+});
+
 test('host config parsing falls back to the legacy single gateway and drops invalid entries', () => {
   assert.deepEqual(fleet.map((h) => h.name), ['sky-mini', 'skyhong-blog', 'skyhong-sm']);
   assert.deepEqual(skyMini.map((h) => [h.name, h.url, h.agent]), [['sky-mini', 'http://100.71.224.62:8318/v1', 'skylabmac']]);
