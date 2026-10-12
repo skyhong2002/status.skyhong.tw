@@ -278,7 +278,10 @@ function accountSnapshot(raw, now) {
     }
     const quota = account.remainingPercent == null ? 'Quota unknown'
       : account.remainingPercent <= 0 ? 'Quota used up · resumes when the window resets' : `${account.remainingPercent}% quota left`;
-    const detail = problem || (account.error ? `${quota} · last check: ${account.error}` : quota);
+    // A peer's mirror of a dead login is not its own problem: the owner's check carries the alert.
+    const mirroredRejection = account.mirror === 'peer' && account.loginRejected
+      ? `Mirrors sky-mini's login, which the upstream rejects${code ? ` (HTTP ${code})` : ''}; recovers after the re-login there` : null;
+    const detail = problem || mirroredRejection || (account.error ? `${quota} · last check: ${account.error}` : quota);
     return { ...account, label: `${provider} · ${account.account || 'account hidden'}`, up: !problem, detail };
   });
   return { fresh: fresh(raw.checkedAt, now, ACCOUNT_STATE_STALE_MS), checkedAt: raw.checkedAt, list };

@@ -170,6 +170,7 @@ test('account logins: a rejected login alerts once, on the host that owns it', (
   assert.equal(check.name, 'AI gateway · sky-mini · Codex · o••@example.com login');
   assert.match(check.detail, /HTTP 401.*OAuth 登入/);
   assert.equal(snap.checks.find((c) => c.id === 'gateway:skyhong-blog:mirrors').detail, '2 mirrors current');
+  assert.match(snap.hosts[1].accounts.list[0].detail, /^Mirrors sky-mini's login, which the upstream rejects \(HTTP 401\)/);
   // Hosts that report account logins drop the legacy single-credential check.
   assert.ok(!snap.checks.some((c) => c.id.endsWith(':credential')));
 });
