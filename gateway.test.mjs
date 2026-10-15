@@ -46,7 +46,7 @@ test('a healthy gateway reports every check up and publishes no secrets', () => 
 
 test('raises incidents for a down listener, a missing alias, and config drift', () => {
   assert.deepEqual(failing(snapshot({ probe: { up: false, detail: 'Timed out', models: [] } })), ['probe']);
-  assert.deepEqual(failing(snapshot({ probe: { up: true, models: ['sky-fast'] } })), ['alias:sky-quality']);
+  assert.deepEqual(failing(snapshot({ probe: { up: true, models: ['sky-fast', 'gpt-6.1-sol'] } })), ['alias:sky-quality']);
   const drift = rawReport({ config: { revision: '2026-09-01', aliases: { 'sky-fast': 'gpt-5.6-luna', 'sky-quality': 'gpt-6.1-sol' } } });
   const snap = snapshot({ report: drift });
   assert.deepEqual(failing(snap), ['alias:sky-fast']);
@@ -153,6 +153,22 @@ test('a failure on one host is attributed to that host only', () => {
   assert.deepEqual(failingIds(fleetSnapshot({ reports: { vps: { receivedAt: minutesAgo(10), report: vpsReport() } } })), ['gateway:skyhong-blog:telemetry']);
   // A silent sky-mini agent does not add a second, usage-telemetry incident.
   assert.deepEqual(failingIds(fleetSnapshot({ reports: { skylabmac: { receivedAt: minutesAgo(10), report: rawReport() } } })), ['gateway:sky-mini:telemetry']);
+});
+
+test('a model paused after upstream errors is one fleet-wide check that waits before alerting', () => {
+  const paused = { up: true, latencyMs: 30, detail: 'ok', models: ['sky-fast', 'gpt-6-luna'] };
+  const snap = fleetSnapshot({ probes: { 'sky-mini': paused, 'skyhong-blog': paused } });
+  assert.deepEqual(failingIds(snap), ['gateway:upstream:gpt-6.1-sol']);
+  const check = snap.checks.find((c) => c.id === 'gateway:upstream:gpt-6.1-sol');
+  assert.equal(check.detail, 'Paused after upstream errors on sky-mini, skyhong-blog');
+  assert.equal(check.alertAfterMs, 15 * 60_000);
+  const quality = snap.hosts[0].aliases[1];
+  assert.deepEqual([quality.paused, quality.up, quality.detail], [true, false, 'gpt-6.1-sol paused after upstream errors']);
+  // Config drift on a paused model is still this host's problem.
+  const drift = vpsReport({ config: { revision: '2026-10-02', aliases: { 'sky-fast': 'gpt-6-luna', 'sky-quality': 'gpt-5.6-sol' } } });
+  assert.deepEqual(failingIds(fleetSnapshot({ probes: { 'sky-mini': paused, 'skyhong-blog': paused }, reports: { vps: { receivedAt: minutesAgo(0), report: drift } } })),
+    ['gateway:skyhong-blog:alias:sky-quality', 'gateway:upstream:gpt-6.1-sol']);
+  assert.equal(fleetSnapshot().checks.find((c) => c.id === 'gateway:upstream:gpt-6.1-sol').up, true);
 });
 
 const accountsBlock = (accounts, checkedAt = minutesAgo(1)) => ({ checkedAt, accounts: accounts.map((a, i) => ({
