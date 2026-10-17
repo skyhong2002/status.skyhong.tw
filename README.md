@@ -82,6 +82,12 @@ Before deployment, back up `.env`, then run `node scripts/configure_production_e
 
 The application runs as UID/GID 1000 with all capabilities dropped, a read-only root filesystem, a writable `/data` volume, and a small temporary filesystem. Security headers include HSTS, CSP, frame denial, and a restrictive permissions policy.
 
+The Compose configuration limits each service's Docker JSON logs to 20 MiB per
+file, retaining three files per container. Existing containers keep their current
+logging settings until recreated in a normal deployment; pulling this file alone
+does not activate rotation. Verify the resulting `HostConfig.LogConfig` after
+deployment. This setting does not cap application data or other services' logs.
+
 ## SkyLabMac agent
 
 `agent/skylabmac_agent.py` is a standard-library-only LaunchAgent. It sends a summary of selected macOS processes to the dashboard once a minute, along with host metrics — root disk usage, load average, and memory pressure — each flagged when it crosses a threshold. It authenticates with a bearer token stored only in `~/.config/sky-status-agent.json` with mode `600`; it does not open any listening port on SkyLabMac.
