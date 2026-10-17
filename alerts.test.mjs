@@ -36,6 +36,29 @@ test('alerts after the threshold, recovers, and can alert again', async () => {
   assert.equal(sends[2].embeds[0].title.startsWith('🔴'), true);
 });
 
+test('holds the alert for a check that asks to wait, then reports the whole outage', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-15T08:00:00Z') });
+  const sends = [];
+  const alerter = await createAlerter({
+    dataDir: temporaryDataDir(), failureThreshold: 2,
+    send: async (payload) => { sends.push(payload); return true; },
+  });
+  const paused = { id: 'upstream', name: 'Upstream', up: false, detail: 'Paused', alertAfterMs: 15 * 60_000 };
+
+  // A pause that clears within the window never alerts.
+  for (let minute = 0; minute < 10; minute += 1) { await alerter.evaluate([paused]); t.mock.timers.tick(60_000); }
+  await alerter.evaluate([{ ...paused, up: true }]);
+  assert.equal(sends.length, 0);
+
+  for (let minute = 0; minute < 15; minute += 1) { await alerter.evaluate([paused]); t.mock.timers.tick(60_000); }
+  assert.equal(sends.length, 0);
+  await alerter.evaluate([paused]);
+  assert.equal(sends.length, 1);
+  t.mock.timers.tick(5 * 60_000);
+  await alerter.evaluate([{ ...paused, up: true, detail: 'Served' }]);
+  assert.match(sends[1].embeds[0].description, /was down for 20m/);
+});
+
 test('loads alerted state and sends recovery after restart', async () => {
   const dataDir = temporaryDataDir();
   const initial = await createAlerter({ dataDir, failureThreshold: 2, send: async () => true });

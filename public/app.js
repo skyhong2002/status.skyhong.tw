@@ -283,8 +283,15 @@ function gatewayHostPanel(host, history) {
       rows.push(row(listener.name, `${listener.source}${latency}${uptime == null ? '' : ` · ${pct(uptime)} over 24 h`}`, listener.up, listener.up ? 'Serving' : 'Down', { tag: 'listener' }));
     }
     for (const alias of host.aliases) {
-      const label = alias.up ? 'Mapped' : alias.listed === false ? 'Missing' : 'Drift';
+      const label = alias.up ? 'Mapped' : alias.paused ? 'Paused' : alias.listed === false ? 'Missing' : 'Drift';
       rows.push(row(alias.alias, alias.detail, alias.listed === null && alias.configMatches === null ? null : alias.up, label, { tag: 'alias' }));
+    }
+    for (const account of host.accounts?.list || []) {
+      const stale = !host.reportFresh || !host.accounts.fresh;
+      // A mirror of a rejected login is neutral here; the owning host's row is the one that needs action.
+      const state = stale || (account.up && account.loginRejected) ? null : account.up;
+      const badge = stale ? 'Stale' : account.loginRejected ? 'Re-login' : !account.up ? 'Expired' : account.remainingPercent === 0 ? 'Used up' : 'Valid';
+      rows.push(row(account.label, account.detail, state, badge, { tag: account.mirror === 'peer' ? 'mirror' : 'login' }));
     }
     if (host.credential) {
       const credential = host.credential;
