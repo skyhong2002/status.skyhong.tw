@@ -21,6 +21,9 @@ BAMBOO_CRON_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/cron/jobs.json")
 BAMBOO_WATCHER_STATE_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/state/discord-watcher/state.json")
 WATCHER_MAX_AGE_SECONDS = 20 * 60
 API_PROBE_TIMEOUT_SECONDS = 5
+CHUMEI_PIPELINE_STATE_PATH = Path("/Users/skyhong/Projects/chumei/state/pipeline.json")
+# The pipeline runs every three hours; allow an hour for a delayed/long run.
+CHUMEI_PIPELINE_MAX_AGE_SECONDS = 4 * 60 * 60
 WATCHES = [
     ("process", "caddy", "Caddy", "/usr/local/sbin/caddy run"),
     # The API is served by `localplaud run` (combined poll+serve) on this host, so a
@@ -99,20 +102,83 @@ def host_metrics(disk_warn=90, mem_warn=92):
     return items
 
 
-def http_probe(url, timeout=API_PROBE_TIMEOUT_SECONDS):
-    """Check a local HTTP endpoint. Any HTTP response means the server is serving;
-    an auth challenge (401/403) still proves the process is up. Only connection
-    errors or timeouts count as down."""
+def http_probe(url, timeout=API_PROBE_TIMEOUT_SECONDS, *, accepted_statuses=(200,)):
+    """Check readiness, defaulting to HTTP 200.
+
+    Receiving an HTTP response proves liveness, but does not imply readiness.
+    An endpoint that intentionally challenges anonymous requests may explicitly
+    accept 401/403. Server errors always fail readiness.
+    """
+    def result(code):
+        ready = code < 500 and code in accepted_statuses
+        return ready, f"{'Ready' if ready else 'Responding but not ready'} · HTTP {code}"
+
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
-            return True, f"Serving · HTTP {response.status}"
+            return result(response.status)
     except urllib.error.HTTPError as error:
         code = error.code
         error.close()
-        return True, f"Serving · HTTP {code}"
+        return result(code)
     except (urllib.error.URLError, OSError) as error:
         reason = getattr(error, "reason", error)
         return False, f"Not serving · {reason}"
+
+
+def http_status_policy(config):
+    """Validate endpoint-specific readiness overrides before probing anything."""
+    policies = config.get("http_accepted_statuses", {})
+    if not isinstance(policies, dict):
+        raise ValueError("http_accepted_statuses must be an object")
+    http_ids = {identifier for kind, identifier, _, _ in WATCHES if kind == "http"}
+    for identifier, statuses in policies.items():
+        if identifier not in http_ids:
+            raise ValueError("http_accepted_statuses contains an unknown HTTP monitor")
+        if not isinstance(statuses, list) or not statuses or any(
+            type(code) is not int or not 200 <= code < 500 for code in statuses
+        ):
+            raise ValueError("HTTP accepted statuses must be a nonempty list of 200–499 codes")
+    return policies
+
+
+def chumei_pipeline_freshness(path=CHUMEI_PIPELINE_STATE_PATH,
+                             max_age_seconds=CHUMEI_PIPELINE_MAX_AGE_SECONDS, now=None):
+    """Read the pipeline's completed publish result, never log/file mtime.
+
+    Chumei writes last_run and last_results after its steps complete. Partial
+    fetch failures are intentionally tolerated by the producer; build (and the
+    legacy telegram step, when present) determine its successful exit status.
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        results = data["last_results"]
+        if not isinstance(results, dict):
+            raise ValueError("missing results")
+        if results.get("build") is not True or results.get("telegram", True) is not True:
+            return False, "Last completed pipeline did not publish successfully"
+        completed = datetime.fromisoformat(data["last_run"].replace("Z", "+00:00"))
+        if completed.tzinfo is None:
+            raise ValueError("missing timezone")
+        age = (now - completed).total_seconds()
+        if age < -60:
+            return False, "Pipeline completion time is in the future"
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return False, "Pipeline completion evidence missing or invalid"
+    minutes = int(max(0, age) // 60)
+    if age > max_age_seconds:
+        return False, f"Pipeline stale · last successful publish {minutes}m ago"
+    return True, f"Last successful publish {minutes}m ago"
+
+
+def scheduled_job_status(identifier, label, jobs, *, previous_status=None):
+    up, detail = launchd_status(label, jobs, scheduled=True, previous_status=previous_status)
+    if up and identifier == "chumei-pipeline":
+        # No attributable, durable last-success artifact is configured for other jobs.
+        # In particular Harmonica's full and fast jobs share one runtime file.
+        fresh, evidence = chumei_pipeline_freshness()
+        return fresh, f"{detail} · {evidence}"
+    return up, detail
 
 
 def parse_launchctl(listing):
@@ -212,7 +278,8 @@ def main():
     try:
         with open(CONFIG_PATH, encoding="utf-8") as config_file:
             config = json.load(config_file)
-    except (OSError, json.JSONDecodeError) as error:
+        status_policy = http_status_policy(config)
+    except (OSError, ValueError, TypeError, AttributeError) as error:
         print(f"status-agent config error: {error}", file=sys.stderr)
         return 1
 
@@ -228,7 +295,7 @@ def main():
             items.append(bamboo_status)
             continue
         if watch_type == "http":
-            up, detail = http_probe(pattern)
+            up, detail = http_probe(pattern, accepted_statuses=status_policy.get(identifier, (200,)))
             items.append({"id": identifier, "name": name, "kind": "HTTP endpoint", "up": up, "detail": detail})
             continue
         if watch_type in ("launchd", "launchd-job"):
@@ -237,12 +304,12 @@ def main():
             previous_status = launchd_job_state.get(pattern)
             if scheduled and pid is None and status is not None:
                 launchd_job_state[pattern] = status
-            up, detail = launchd_status(
-                pattern,
-                launchd_jobs,
-                scheduled=scheduled,
-                previous_status=previous_status,
-            )
+            if scheduled:
+                up, detail = scheduled_job_status(
+                    identifier, pattern, launchd_jobs, previous_status=previous_status,
+                )
+            else:
+                up, detail = launchd_status(pattern, launchd_jobs)
             kind = "Scheduled job" if scheduled else "LaunchAgent"
             items.append({"id": identifier, "name": name, "kind": kind, "up": up, "detail": detail})
             continue

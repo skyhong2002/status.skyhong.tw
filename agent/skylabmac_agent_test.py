@@ -1,9 +1,12 @@
+import io
 import json
 import os
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -20,10 +23,14 @@ from gateway_telemetry import (
 )
 from skylabmac_agent import (
     bamboo_discord_status,
+    chumei_pipeline_freshness,
     http_probe,
+    http_status_policy,
     launchd_status,
     load_launchd_job_state,
+    main,
     save_launchd_job_state,
+    scheduled_job_status,
 )
 
 
@@ -69,42 +76,183 @@ class BambooDiscordStatusTest(unittest.TestCase):
 
 
 class HttpProbeTest(unittest.TestCase):
-    def serve(self, status):
-        class Handler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                self.send_response(status)
-                self.end_headers()
-                self.wfile.write(b"{}")
+    url = "http://fixture.invalid/healthz"
 
-            def log_message(self, *args):
-                pass
-
-        server = HTTPServer(("127.0.0.1", 0), Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        return f"http://127.0.0.1:{server.server_port}/healthz"
+    def probe(self, status, **kwargs):
+        with patch("skylabmac_agent.urllib.request.urlopen") as urlopen:
+            if status >= 400:
+                urlopen.side_effect = urllib.error.HTTPError(self.url, status, "fixture", {}, io.BytesIO(b"{}"))
+            else:
+                urlopen.return_value.__enter__.return_value.status = status
+            return http_probe(self.url, **kwargs)
 
     def test_200_is_up(self):
-        up, detail = http_probe(self.serve(200))
+        up, detail = self.probe(200)
         self.assertTrue(up)
-        self.assertIn("200", detail)
+        self.assertEqual(detail, "Ready · HTTP 200")
 
-    def test_401_still_up(self):
-        # An auth challenge proves the API process is serving requests.
-        up, detail = http_probe(self.serve(401))
-        self.assertTrue(up)
-        self.assertIn("401", detail)
+    def test_liveness_does_not_imply_readiness(self):
+        for status in (204, 401, 403, 404, 429, 500, 503):
+            with self.subTest(status=status):
+                up, detail = self.probe(status)
+                self.assertFalse(up)
+                self.assertEqual(detail, f"Responding but not ready · HTTP {status}")
+
+    def test_auth_challenge_requires_explicit_endpoint_policy(self):
+        for status in (401, 403):
+            with self.subTest(status=status):
+                up, detail = self.probe(status, accepted_statuses=(200, status))
+                self.assertTrue(up)
+                self.assertIn(str(status), detail)
+
+    def test_server_errors_cannot_be_accepted_as_ready(self):
+        self.assertFalse(self.probe(503, accepted_statuses=(200, 503))[0])
 
     def test_connection_refused_is_down(self):
-        # Port 1 is reserved and never listening.
-        up, detail = http_probe("http://127.0.0.1:1/healthz", timeout=1)
+        with patch("skylabmac_agent.urllib.request.urlopen",
+                   side_effect=urllib.error.URLError("connection refused")):
+            up, detail = http_probe(self.url, timeout=1)
         self.assertFalse(up)
         self.assertIn("Not serving", detail)
 
+    def test_timeout_is_down(self):
+        with patch("skylabmac_agent.urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+            self.assertFalse(http_probe(self.url)[0])
+
+
+class HttpStatusPolicyTest(unittest.TestCase):
+    def test_absent_policy_uses_readiness_default(self):
+        self.assertEqual(http_status_policy({}), {})
+
+    def test_override_is_specific_to_an_http_monitor(self):
+        policies = {"localplaud-api": [200, 401]}
+        self.assertEqual(http_status_policy({"http_accepted_statuses": policies}), policies)
+
+    def test_invalid_policy_fails_closed(self):
+        for policies in ([], {"typo": [200]}, {"caddy": [200]},
+                         {"localplaud-api": []}, {"localplaud-api": "200"},
+                         {"localplaud-api": [True]}, {"localplaud-api": ["401"]},
+                         {"localplaud-api": [503]}):
+            with self.subTest(policies=policies), self.assertRaises(ValueError):
+                http_status_policy({"http_accepted_statuses": policies})
+
+
+class ChumeiPipelineFreshnessTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / "pipeline.json"
+        self.now = datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc)
+
+    def write(self, age_minutes=10, results=None, completed=None):
+        self.path.write_text(json.dumps({
+            "last_run": completed or (self.now - timedelta(minutes=age_minutes)).isoformat(),
+            "last_results": results if results is not None else {"extract": True, "build": True},
+        }), encoding="utf-8")
+
+    def check(self):
+        return chumei_pipeline_freshness(self.path, now=self.now)
+
+    def test_successful_publish_is_fresh_until_deadline(self):
+        self.write(age_minutes=240)
+        self.assertTrue(self.check()[0])
+
+    def test_stale_success_is_down_even_when_file_was_just_written(self):
+        self.write(age_minutes=241)
+        up, detail = self.check()
+        self.assertFalse(up)
+        self.assertIn("Pipeline stale", detail)
+
+    def test_failed_publish_is_not_a_success_heartbeat(self):
+        for results in ({"build": False}, {"build": True, "telegram": False}, {}):
+            with self.subTest(results=results):
+                self.write(results=results)
+                self.assertFalse(self.check()[0])
+
+    def test_optional_fetch_failure_does_not_override_producer_success(self):
+        self.write(results={"facebook": False, "extract": True, "build": True})
+        self.assertTrue(self.check()[0])
+
+    def test_missing_or_malformed_evidence_is_not_healthy(self):
+        self.assertFalse(self.check()[0])
+        for content in ("{", "null", "[]", '{"last_results": true}',
+                        '{"last_results": {"build": true}, "last_run": 42}'):
+            with self.subTest(content=content):
+                self.path.write_text(content, encoding="utf-8")
+                self.assertFalse(self.check()[0])
+
+    def test_timezone_required_and_future_timestamp_rejected(self):
+        self.write(completed="2026-10-18T00:00:00")
+        self.assertFalse(self.check()[0])
+        self.write(age_minutes=-5)
+        self.assertFalse(self.check()[0])
+
+    def test_utc_z_and_small_clock_skew_are_supported(self):
+        self.write(completed="2026-10-18T00:00:30Z")
+        self.assertTrue(self.check()[0])
+
+
+class AgentReportCompatibilityTest(unittest.TestCase):
+    def test_endpoint_policy_and_report_wire_shape(self):
+        # All I/O is injected: this never launches probes, inference, or ingestion.
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "agent.json"
+            config.write_text(json.dumps({
+                "endpoint": "https://fixture.invalid", "token": "fixture-token", "gateway": False,
+                "http_accepted_statuses": {"localplaud-api": [200, 401]},
+            }), encoding="utf-8")
+            watches = [
+                ("http", "localplaud-api", "LocalPlaud API", "http://local.invalid/healthz"),
+                ("http", "bamboo-rsshub", "Bamboo RSSHub", "http://rss.invalid/healthz"),
+                ("launchd-job", "chumei-pipeline", "Chumei pipeline", "chumei.job"),
+            ]
+            with patch("skylabmac_agent.CONFIG_PATH", str(config)), \
+                 patch("skylabmac_agent.WATCHES", watches), \
+                 patch("skylabmac_agent.command_output", return_value="-\t0\tchumei.job\n"), \
+                 patch("skylabmac_agent.load_launchd_job_state", return_value={}), \
+                 patch("skylabmac_agent.save_launchd_job_state"), \
+                 patch("skylabmac_agent.host_metrics", return_value=[]), \
+                 patch("skylabmac_agent.gateway_report") as gateway, \
+                 patch("skylabmac_agent.chumei_pipeline_freshness", return_value=(False, "Pipeline stale")), \
+                 patch("skylabmac_agent.http_probe", return_value=(True, "Ready · HTTP 200")) as probe, \
+                 patch("skylabmac_agent.urllib.request.urlopen") as post:
+                post.return_value.__enter__.return_value.status = 200
+                self.assertEqual(main(), 0)
+                gateway.assert_not_called()
+                self.assertEqual(probe.call_args_list[0].kwargs["accepted_statuses"], [200, 401])
+                self.assertEqual(probe.call_args_list[1].kwargs["accepted_statuses"], (200,))
+                request = post.call_args.args[0]
+                self.assertEqual(request.full_url, "https://fixture.invalid/api/agents/skylabmac")
+                payload = json.loads(request.data)
+                self.assertEqual(set(payload), {"host", "items"})
+                for item in payload["items"]:
+                    self.assertEqual(set(item), {"id", "name", "kind", "up", "detail"})
+                self.assertFalse(payload["items"][-1]["up"])
+                self.assertEqual(payload["items"][-1]["id"], "chumei-pipeline")
+
 
 class LaunchdStatusTest(unittest.TestCase):
+    def test_idle_success_requires_fresh_chumei_publish(self):
+        with patch("skylabmac_agent.chumei_pipeline_freshness", return_value=(False, "Pipeline stale")):
+            up, detail = scheduled_job_status("chumei-pipeline", "job", {"job": (None, 0)})
+        self.assertFalse(up)
+        self.assertIn("Pipeline stale", detail)
+
+    def test_running_job_does_not_hide_stale_publish(self):
+        with patch("skylabmac_agent.chumei_pipeline_freshness", return_value=(False, "Pipeline stale")):
+            self.assertFalse(scheduled_job_status("chumei-pipeline", "job", {"job": (123, 0)})[0])
+
+    def test_fresh_artifact_cannot_hide_launchd_failure(self):
+        with patch("skylabmac_agent.chumei_pipeline_freshness") as freshness:
+            self.assertFalse(scheduled_job_status("chumei-pipeline", "job", {"job": (None, 1)})[0])
+            freshness.assert_not_called()
+
+    def test_unattributable_jobs_keep_existing_status_semantics(self):
+        with patch("skylabmac_agent.chumei_pipeline_freshness") as freshness:
+            self.assertEqual(scheduled_job_status("harmonica-social-fast", "job", {"job": (None, 0)}),
+                             (True, "Scheduled · last run ok"))
+            freshness.assert_not_called()
+
     def test_failed_scheduled_job_stays_down_while_retry_runs(self):
         up, detail = launchd_status(
             "example.job",
