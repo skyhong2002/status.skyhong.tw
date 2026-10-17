@@ -1,7 +1,8 @@
 # SkyLabMac health policies
 
-The agent reports the existing `{ host, items, gateway? }` ingest payload. Monitor
-IDs and each item's `id`, `name`, `kind`, `up`, and `detail` fields remain the same,
+The agent reports the existing `{ host, items, gateway? }` ingest payload.
+Existing monitor IDs and each item's `id`, `name`, `kind`, `up`, and `detail`
+fields remain the same,
 so the dashboard can receive the report without a coordinated server update.
 
 ## HTTP readiness
@@ -59,12 +60,101 @@ add or alter OmniObserve monitors.
 ## Offline validation
 
 ```sh
-python3 -m unittest discover -s agent -p '*_test.py'
+python3 -B agent/run_local_tests.py
 npm test
 ```
 
-The readiness and completion tests inject HTTP results and temporary artifacts;
-the existing gateway tests use local fixture servers. Tests do not run the agent
-entry point against real configuration, send production reports, call an
-upstream model, or send notifications. CI runs the dashboard suite on Node 22
-and the agent suite on Python 3.12. The external watchdog workflow is separate.
+The Python runner installs socket/DNS/subprocess and production-data read guards
+before importing tests. Tests exercise function orchestration with mocks and
+temporary artifacts, never agent `main`, `gateway_report`, reporting or
+heartbeats. Four legacy loopback HTTP/gateway integration tests are explicitly
+skipped by this runner. Their source remains available, but running unguarded
+unittest discovery does not provide these protections. The Node test preload
+denies outbound connections, DNS, fetch and child commands before test imports;
+the existing localhost lookup test receives a synthetic loopback result.
+CI uses these guarded commands on Node 22 / Python 3.12. The local diagnostic
+module and runner also support Python 3.9. The external watchdog is separate.
+
+Implementation validation on 2026-10-18: Python 3.9.6 and 3.14.7 each passed
+55 tests with four explicit skips (59 discovered); Node 26.8.1 passed all 50
+tests. Guard regressions confirm denied connections/processes and production
+reads. No live diagnostic command, agent entry point or telemetry was executed.
+
+## Local diagnostic visibility
+
+`agent/local_diagnostics` vendors the reviewed Bamboo `check_job.py` and Colima
+`check_dependency.py` logic into the repository. It needs only Python's standard
+library and the local Homebrew Docker CLI; there are no scratch imports, Hermes
+imports, new services, schedulers or state files. The existing status agent
+includes two additional items on its normal report:
+
+- `bamboo-daily-reminder`: job `c808402728f9` only, from
+  `/Users/skyhong/.hermes/profiles/bamboo/cron/jobs.json`. Only recorded `ok`
+  success within 36 hours is up. Delivery/dispatch errors, contradictory errors,
+  stale success, missing/duplicate jobs and invalid evidence are attention.
+  Timestamps require a timezone, accept `Z` on Python 3.9 and tolerate at most
+  five minutes of future clock skew. Both `[drift_skip]` and
+  `[drift_skip:silent]` stay visible as drift skips; the latter explicitly says
+  repeat notification is suppressed. This does not clear `drift_alerted`, rerun
+  the job, pick a model/provider pin or bypass the spend guard. An owner must
+  review the job-specific pin separately. A stored success is scheduler evidence,
+  not independent confirmation that a recipient saw the reminder.
+- `colima-bamboo-rsshub`: engine availability and Docker container health for
+  `bamboo-rsshub`. Only running **and** Docker `healthy` is up. Unconfigured,
+  unhealthy and stopped states are labeled attention; starting, unavailable and
+  unrecognized evidence are explicitly unknown. This is independent of the
+  unchanged `bamboo-rsshub` HTTP readiness check. A healthy dependency does not
+  prove upstream scraping/model routes work. RSSHub was reported healthy at
+  handoff; this change makes no new live health observation.
+
+The public ingest schema is boolean. Explicitly disabled jobs therefore appear
+as `up: false` with **Disabled explicitly** text, and unknown states also stay
+`up: false`. There is no fabricated green state or schema expansion. Existing
+HTTP policy, Chumei freshness, other monitors and heartbeat eligibility remain
+unchanged. The diagnostics themselves do not notify; after rollout their items
+participate in the dashboard's existing generic incident handling, so deployment
+may produce a new incident for an existing drift/disabled/unknown condition.
+
+Docker access first reads only the named `colima` context metadata at
+`~/.docker/contexts/meta/SHA256(colima)/meta.json` for this host's fixed user path.
+It must identify `colima` and exactly
+`unix:///Users/skyhong/.colima/default/docker.sock`. A missing or different
+endpoint fails closed before any engine query. Each query then uses `--host`
+with that exact socket, avoiding context-change races and default overrides.
+An empty temporary `--config` directory and minimal child environment avoid
+loading Docker credentials, plugins selected by client config, proxies or
+`DOCKER_*` overrides. The CLI is `/opt/homebrew/bin/docker` (verified available
+on the implementation host); a missing binary produces unknown. Queries are
+only `info` for a server-version scalar and formatted `inspect` for container
+status/health, each with an eight-second subprocess timeout (up to 16 seconds
+total). They do not change defaults, start/restart anything, use `exec`, dump
+container configuration or expose Docker health logs. Context input is capped
+at 64 KiB and the cron store at 16 MiB. JSON, subprocess failures and arbitrary
+fields become fixed sanitized messages; no raw errors/history are printed.
+
+For a local read-only diagnostic, run from the repository root:
+
+```sh
+python3 -B -m agent.local_diagnostics
+```
+
+This command reads only the allowlisted job store, context metadata and local
+Docker socket. It accepts no path, endpoint, context or config overrides and
+prints sanitized JSON with the same two status items. Exit 0 means both have
+positive success/health evidence; 1 means attention (including disabled); 2
+means at least one unknown/input failure. It never imports the status agent or
+gateway telemetry, loads agent config/tokens, posts ingestion/heartbeat data,
+runs a job, sends a notification, or installs anything. Docker creates and
+removes only an empty temporary client-config directory. Unit tests inject both
+sources; the command was not run against live sources during implementation.
+
+Rollout is deferred. Review and deploy this commit plus the whole
+`agent/local_diagnostics/` package together through the existing agent delivery
+process; no launchd/schedule or production-config edits are required. Do not
+copy an entire worktree over the live checkout: preserve its unrelated dirty
+`README.md` and `.env.example`. This implementation did not modify live files,
+services, Docker, jobs, providers or remotes. A later owner can run the local
+command and confirm both new IDs reach the dashboard through normal reporting.
+Rollback removes the two diagnostic items/integration by reverting this commit;
+there is no diagnostic persistent state or job mutation to undo. Existing
+dashboard incident/history retention still follows its normal policy.

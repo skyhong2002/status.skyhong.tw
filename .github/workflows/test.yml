@@ -27,4 +27,4 @@ jobs:
         with:
           python-version: '3.12'
       - name: Run offline agent regression tests
-        run: python -m unittest discover -s agent -p '*_test.py'
+        run: python -B agent/run_local_tests.py

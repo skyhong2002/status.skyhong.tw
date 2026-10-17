@@ -29,7 +29,7 @@ from skylabmac_agent import (
     http_status_policy,
     launchd_status,
     load_launchd_job_state,
-    main,
+    collect_service_items,
     save_launchd_job_state,
     scheduled_job_status,
 )
@@ -241,42 +241,32 @@ class ChumeiPipelineFreshnessTest(unittest.TestCase):
 
 
 class AgentReportCompatibilityTest(unittest.TestCase):
-    def test_endpoint_policy_and_report_wire_shape(self):
-        # All I/O is injected: this never launches probes, inference, or ingestion.
-        with tempfile.TemporaryDirectory() as directory:
-            config = Path(directory) / "agent.json"
-            config.write_text(json.dumps({
-                "endpoint": "https://fixture.invalid", "token": "fixture-token", "gateway": False,
-                "http_accepted_statuses": {"localplaud-api": [200, 401]},
-            }), encoding="utf-8")
-            watches = [
-                ("http", "localplaud-api", "LocalPlaud API", "http://local.invalid/healthz"),
-                ("http", "bamboo-rsshub", "Bamboo RSSHub", "http://rss.invalid/healthz"),
-                ("launchd-job", "chumei-pipeline", "Chumei pipeline", "chumei.job"),
-            ]
-            with patch("skylabmac_agent.CONFIG_PATH", str(config)), \
-                 patch("skylabmac_agent.WATCHES", watches), \
-                 patch("skylabmac_agent.command_output", return_value="-\t0\tchumei.job\n"), \
-                 patch("skylabmac_agent.load_launchd_job_state", return_value={}), \
-                 patch("skylabmac_agent.save_launchd_job_state"), \
-                 patch("skylabmac_agent.host_metrics", return_value=[]), \
-                 patch("skylabmac_agent.gateway_report") as gateway, \
-                 patch("skylabmac_agent.chumei_pipeline_freshness", return_value=(False, "Pipeline stale")), \
-                 patch("skylabmac_agent.http_probe", return_value=(True, "Ready · HTTP 200")) as probe, \
-                 patch("skylabmac_agent.urllib.request.urlopen") as post:
-                post.return_value.__enter__.return_value.status = 200
-                self.assertEqual(main(), 0)
-                gateway.assert_not_called()
-                self.assertEqual(probe.call_args_list[0].kwargs["accepted_statuses"], [200, 401])
-                self.assertEqual(probe.call_args_list[1].kwargs["accepted_statuses"], (200,))
-                request = post.call_args.args[0]
-                self.assertEqual(request.full_url, "https://fixture.invalid/api/agents/skylabmac")
-                payload = json.loads(request.data)
-                self.assertEqual(set(payload), {"host", "items"})
-                for item in payload["items"]:
-                    self.assertEqual(set(item), {"id", "name", "kind", "up", "detail"})
-                self.assertFalse(payload["items"][-1]["up"])
-                self.assertEqual(payload["items"][-1]["id"], "chumei-pipeline")
+    def test_endpoint_policy_and_item_wire_shape(self):
+        # Call orchestration only: no main/config, telemetry, reporting or heartbeat.
+        watches = [
+            ("http", "localplaud-api", "LocalPlaud API", "http://local.invalid/healthz"),
+            ("http", "bamboo-rsshub", "Bamboo RSSHub", "http://rss.invalid/healthz"),
+            ("launchd-job", "chumei-pipeline", "Chumei pipeline", "chumei.job"),
+        ]
+        diagnostics = [{"id": "fixture-diagnostic", "name": "Diagnostic", "kind": "Local",
+                        "up": False, "detail": "Unknown"}]
+        with patch("skylabmac_agent.WATCHES", watches), \
+             patch("skylabmac_agent.diagnostic_items", return_value=diagnostics) as local, \
+             patch("skylabmac_agent.chumei_pipeline_freshness", return_value=(False, "Pipeline stale")), \
+             patch("skylabmac_agent.http_probe", return_value=(True, "Ready · HTTP 200")) as probe:
+            items, heartbeat_status = collect_service_items(
+                "", "-\t0\tchumei.job\n", {}, {"localplaud-api": [200, 401]},
+            )
+        self.assertIsNone(heartbeat_status)
+        local.assert_called_once_with()
+        self.assertEqual(probe.call_args_list[0].kwargs["accepted_statuses"], [200, 401])
+        self.assertEqual(probe.call_args_list[1].kwargs["accepted_statuses"], (200,))
+        for item in items:
+            self.assertEqual(set(item), {"id", "name", "kind", "up", "detail"})
+        self.assertTrue(items[1]["up"])
+        self.assertFalse(items[2]["up"])
+        self.assertEqual(items[2]["id"], "chumei-pipeline")
+        self.assertEqual(items[-1], diagnostics[0])
 
 
 class LaunchdStatusTest(unittest.TestCase):

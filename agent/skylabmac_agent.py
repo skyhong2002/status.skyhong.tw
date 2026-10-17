@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from gateway_telemetry import gateway_report
+from local_diagnostics import diagnostic_items
 
 
 class NoReadinessRedirects(urllib.request.HTTPRedirectHandler):
@@ -285,19 +286,9 @@ def bamboo_discord_status(cron_path=BAMBOO_CRON_PATH, state_path=BAMBOO_WATCHER_
     return {"id": "bamboo-discord", "name": "Bamboo Discord watcher", "kind": "Hermes cron", "up": healthy, "detail": detail}
 
 
-def main():
-    try:
-        with open(CONFIG_PATH, encoding="utf-8") as config_file:
-            config = json.load(config_file)
-        status_policy = http_status_policy(config)
-    except (OSError, ValueError, TypeError, AttributeError) as error:
-        print(f"status-agent config error: {error}", file=sys.stderr)
-        return 1
-
-    processes = command_output(["ps", "-axo", "pid=,args="])
-    launchd = command_output(["launchctl", "list"])
+def collect_service_items(processes, launchd, launchd_job_state, status_policy):
+    """Compose service items independently of config, telemetry and delivery."""
     launchd_jobs = parse_launchctl(launchd)
-    launchd_job_state = load_launchd_job_state()
     items = []
     bamboo_status = None
     for watch_type, identifier, name, pattern in WATCHES:
@@ -328,6 +319,23 @@ def main():
         detail = "Process detected" if pattern in processes else ("LaunchAgent loaded" if pattern in launchd else "Process not found")
         items.append({"id": identifier, "name": name, "kind": "Process", "up": present, "detail": detail})
 
+    items.extend(diagnostic_items())
+    return items, bamboo_status
+
+
+def main():
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as config_file:
+            config = json.load(config_file)
+        status_policy = http_status_policy(config)
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        print(f"status-agent config error: {error}", file=sys.stderr)
+        return 1
+
+    processes = command_output(["ps", "-axo", "pid=,args="])
+    launchd = command_output(["launchctl", "list"])
+    launchd_job_state = load_launchd_job_state()
+    items, bamboo_status = collect_service_items(processes, launchd, launchd_job_state, status_policy)
     items.extend(host_metrics())
     save_launchd_job_state(launchd_job_state)
 
