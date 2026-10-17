@@ -9,6 +9,10 @@ so the dashboard can receive the report without a coordinated server update.
 The LocalPlaud and RSSHub `/healthz` checks accept **HTTP 200** by default.
 An HTTP response proves that a process answered; HTTP 500/503 still means its
 health endpoint is not ready. Connection failures and timeouts also fail.
+Redirects are not followed: a health endpoint's 302 to a login page fails the
+default policy even when that login page would return 200. An explicitly accepted
+302 is evaluated directly without requesting its destination. This readiness-only
+policy does not change redirects for report ingestion, heartbeats, or gateway calls.
 
 If a specific endpoint intentionally uses an authentication challenge as its
 expected response, add its monitor ID to the existing private agent config at

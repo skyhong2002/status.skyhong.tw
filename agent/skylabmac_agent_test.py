@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -79,7 +80,7 @@ class HttpProbeTest(unittest.TestCase):
     url = "http://fixture.invalid/healthz"
 
     def probe(self, status, **kwargs):
-        with patch("skylabmac_agent.urllib.request.urlopen") as urlopen:
+        with patch("skylabmac_agent.READINESS_HTTP_OPENER.open") as urlopen:
             if status >= 400:
                 urlopen.side_effect = urllib.error.HTTPError(self.url, status, "fixture", {}, io.BytesIO(b"{}"))
             else:
@@ -109,15 +110,62 @@ class HttpProbeTest(unittest.TestCase):
         self.assertFalse(self.probe(503, accepted_statuses=(200, 503))[0])
 
     def test_connection_refused_is_down(self):
-        with patch("skylabmac_agent.urllib.request.urlopen",
+        with patch("skylabmac_agent.READINESS_HTTP_OPENER.open",
                    side_effect=urllib.error.URLError("connection refused")):
             up, detail = http_probe(self.url, timeout=1)
         self.assertFalse(up)
         self.assertIn("Not serving", detail)
 
     def test_timeout_is_down(self):
-        with patch("skylabmac_agent.urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+        with patch("skylabmac_agent.READINESS_HTTP_OPENER.open", side_effect=TimeoutError("timed out")):
             self.assertFalse(http_probe(self.url)[0])
+
+    def redirect_fixture(self):
+        seen = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                self.send_response(self.server.redirect_status if self.path == "/healthz" else 200)
+                if self.path == "/healthz":
+                    self.send_header("Location", "/login")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server, seen, f"http://127.0.0.1:{server.server_port}/healthz"
+
+    def test_redirect_to_login_is_not_healthy_by_default_and_is_not_followed(self):
+        server, seen, url = self.redirect_fixture()
+        for status in (301, 302, 303, 307, 308):
+            with self.subTest(status=status):
+                server.redirect_status = status
+                seen.clear()
+                up, detail = http_probe(url)
+                self.assertFalse(up)
+                self.assertEqual(detail, f"Responding but not ready · HTTP {status}")
+                self.assertEqual(seen, ["/healthz"])
+
+    def test_explicit_redirect_policy_accepts_original_status_without_following(self):
+        server, seen, url = self.redirect_fixture()
+        server.redirect_status = 302
+        up, detail = http_probe(url, accepted_statuses=(302,))
+        self.assertTrue(up)
+        self.assertEqual(detail, "Ready · HTTP 302")
+        self.assertEqual(seen, ["/healthz"])
+
+    def test_other_http_clients_keep_normal_redirect_behavior(self):
+        server, seen, url = self.redirect_fixture()
+        server.redirect_status = 302
+        with urllib.request.urlopen(url, timeout=2) as response:
+            self.assertEqual(response.status, 200)
+        self.assertEqual(seen, ["/healthz", "/login"])
 
 
 class HttpStatusPolicyTest(unittest.TestCase):

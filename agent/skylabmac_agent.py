@@ -15,6 +15,16 @@ from pathlib import Path
 
 from gateway_telemetry import gateway_report
 
+
+class NoReadinessRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        # Evaluate the health endpoint's own response, never a login/fallback page.
+        return None
+
+
+# A private opener leaves report ingestion, heartbeats, and gateway HTTP unchanged.
+READINESS_HTTP_OPENER = urllib.request.build_opener(NoReadinessRedirects())
+
 CONFIG_PATH = os.path.expanduser("~/.config/sky-status-agent.json")
 LAUNCHD_JOB_STATE_PATH = Path(os.path.expanduser("~/.config/sky-status-launchd-jobs.json"))
 BAMBOO_CRON_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/cron/jobs.json")
@@ -107,14 +117,15 @@ def http_probe(url, timeout=API_PROBE_TIMEOUT_SECONDS, *, accepted_statuses=(200
 
     Receiving an HTTP response proves liveness, but does not imply readiness.
     An endpoint that intentionally challenges anonymous requests may explicitly
-    accept 401/403. Server errors always fail readiness.
+    accept 401/403. Redirects are evaluated without following them; server errors
+    always fail readiness.
     """
     def result(code):
         ready = code < 500 and code in accepted_statuses
         return ready, f"{'Ready' if ready else 'Responding but not ready'} · HTTP {code}"
 
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with READINESS_HTTP_OPENER.open(url, timeout=timeout) as response:
             return result(response.status)
     except urllib.error.HTTPError as error:
         code = error.code
