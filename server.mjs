@@ -70,6 +70,8 @@ let gatewayReports = {};
 let history = {};
 const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, gateway: null, alertDelivery: {}, errors: [], history24h: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
 const alerter = await createAlerter({ dataDir });
+// The items the alerter judged on the latest check, so /api/incidents reports exactly what pages.
+let alertItemsLatest = [];
 const heartbeats = await createHeartbeats({ dataDir });
 const uptimeStore = await createUptimeStore({ dataDir });
 const publicAssets = new Map(await Promise.all([
@@ -263,6 +265,7 @@ async function refresh() {
     ...state.domains.filter((d) => d.ok && d.daysRemaining != null).map((d) => ({ id: `domain:${d.domain}`, name: `${d.domain} · domain registration`, up: d.daysRemaining > domainWarnDays, detail: `expires in ${d.daysRemaining}d` })),
   ];
   alertItems.push(...gatewayItems);
+  alertItemsLatest = alertItems;
   state.maintenance = activeMaintenance();
   if (!state.maintenance) { try { await alerter.evaluate(alertItems); } catch {} }
   state.alertDelivery = { incident: alerter.deliveryStatus() };
@@ -423,6 +426,12 @@ const server = createServer(async (request, response) => {
     return testAlerts(request, response);
   }
   if (url.pathname === '/api/status') return json(response, state);
+  // Active incidents for automated responders (Hermes): the same items and thresholds that page Discord.
+  if (url.pathname === '/api/incidents') return json(response, {
+    checkedAt: state.checkedAt, maintenance: state.maintenance, monitored: alertItemsLatest.length,
+    active: alerter.activeIncidents(alertItemsLatest), recent: alerter.recentIncidents(20),
+    alertDelivery: state.alertDelivery, errors: state.errors,
+  });
   // Raw points, split from /api/status so the dashboard payload stays small.
   if (url.pathname === '/api/history') return json(response, history);
   if (url.pathname === '/livez') return json(response, { ok: true });

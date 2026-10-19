@@ -10,6 +10,7 @@ The public interface uses a Kener-inspired status banner, monitor grouping, and 
 
 - `GET /api/status` — the dashboard snapshot. The 24-hour history is published as `history24h`: per monitor, a 48-character string (one 30-minute bin each; `0` no data, `1` all checks passed, `2` at least one failure) plus the 24-hour uptime percentage and check count. This keeps the payload around 70 KB.
 - `GET /api/history` — the raw `{ t, up }` points behind that summary (about 1,440 per monitor), split out because they are several megabytes.
+- `GET /api/incidents` — what is failing right now, for automated responders: every currently failing incident item (the same items and IDs that page Discord) with `failingSince`, `failCount`, `confirmed` (failed long enough to page, whether or not the webhook delivered) and `alerted`, plus the 20 most recent down/recovery events, the active maintenance window, and incident delivery status. Sky's private Hermes agent polls it every five minutes to investigate and repair confirmed incidents; see *Automated response* below.
 
 ## Add a product
 
@@ -49,6 +50,10 @@ Alongside the rolling 24-hour history, each check is folded into per-day uptime 
 Set `DISCORD_ALERT_WEBHOOK_URL` to receive a Discord message whenever a monitored item goes down or recovers. This covers every public target, Docker service, remote agent item, heartbeat, certificate and domain expiry, and AI gateway check. If the alert webhook is unset it falls back to `DISCORD_WEBHOOK_URL`; if neither is set, no alerts are sent.
 
 An item must fail `ALERT_FAILURE_THRESHOLD` consecutive checks (default 2) before a down alert fires, which suppresses single-check flapping. Each incident sends exactly one down message and one recovery message; the recovery note includes how long the item was down. Incident state is persisted to `/data/alerts.json`, so a restart neither loses an open incident nor re-sends an alert that already went out. A webhook that fails to deliver is retried on the next cycle rather than being marked as sent. Delivery attempts, successes, and failures are persisted and exposed through the public status API and Prometheus metrics. An authenticated `POST /api/alerts/test` checks the Discord webhook end to end.
+
+## Automated response
+
+Sky's private Hermes agent (on mint-mbp, repository `skyhong2002/hermes-agent`) watches `GET /api/incidents` every five minutes. When an incident becomes `confirmed`, or the dashboard itself stops answering, it signs in to this VPS over Tailscale with a dedicated key (`hermes@mint-mbp`, restricted to Mint's tailnet address in `~ubuntu/.ssh/authorized_keys`), investigates, applies reversible fixes, and reports to Discord `#ops`. It may also improve this dashboard's coverage; such changes land here as ordinary commits and deployments, following *Deployment* below. Remove that `authorized_keys` line to revoke its access.
 
 ## Heartbeats (dead-man's switch)
 

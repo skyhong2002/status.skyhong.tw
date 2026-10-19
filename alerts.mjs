@@ -157,6 +157,26 @@ export async function createAlerter(options = {}) {
     return incidents.slice(0, Math.max(0, limit));
   }
 
+  // The failing items among `items`, joined with their incident record. `confirmed` means the item has
+  // failed long enough to page (threshold and alertAfterMs), whether or not the webhook delivered it.
+  function activeIncidents(items) {
+    const now = Date.now();
+    return items.filter((item) => !item.up).map((item) => {
+      const record = state[item.id] || {};
+      const failCount = record.failCount || 0;
+      const overdue = !item.alertAfterMs || (record.failingSince != null && now - record.failingSince >= item.alertAfterMs);
+      return {
+        id: item.id,
+        name: item.name,
+        detail: item.detail || null,
+        failingSince: record.failingSince != null ? new Date(record.failingSince).toISOString() : null,
+        failCount,
+        confirmed: failCount >= failureThreshold && overdue,
+        alerted: Boolean(record.alerted),
+      };
+    });
+  }
+
   async function testDelivery() {
     if (!delivery.configured) return false;
     return attemptDelivery({ embeds: [{
@@ -167,5 +187,5 @@ export async function createAlerter(options = {}) {
     }] });
   }
 
-  return { evaluate, recentIncidents, testDelivery, deliveryStatus: () => ({ ...delivery }) };
+  return { evaluate, recentIncidents, activeIncidents, testDelivery, deliveryStatus: () => ({ ...delivery }) };
 }

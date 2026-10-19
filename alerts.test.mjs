@@ -111,3 +111,35 @@ test('formats compact human durations', () => {
   assert.equal(humanDuration(3 * 3600 * 1000), '3h');
   assert.equal(humanDuration(2 * 86_400 * 1000), '2d');
 });
+
+test('reports failing items as active incidents, confirmed once they would page', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-20T00:00:00Z') });
+  let deliver = false;
+  const alerter = await createAlerter({
+    dataDir: temporaryDataDir(), failureThreshold: 2,
+    send: async () => deliver,
+  });
+  const site = { id: 'site', name: 'Site', up: false, detail: 'Timed out' };
+  const slow = { id: 'slow', name: 'Slow', up: false, detail: 'Paused', alertAfterMs: 10 * 60_000 };
+  const fine = { id: 'fine', name: 'Fine', up: true, detail: 'OK' };
+
+  await alerter.evaluate([site, slow, fine]);
+  let active = alerter.activeIncidents([site, slow, fine]);
+  assert.deepEqual(active.map((item) => [item.id, item.confirmed]), [['site', false], ['slow', false]]);
+  assert.equal(active[0].failingSince, '2026-10-20T00:00:00.000Z');
+
+  // Confirmed even when the webhook fails, so a responder does not depend on Discord.
+  t.mock.timers.tick(60_000);
+  await alerter.evaluate([site, slow, fine]);
+  active = alerter.activeIncidents([site, slow, fine]);
+  assert.deepEqual(active.map((item) => [item.id, item.confirmed, item.alerted]), [['site', true, false], ['slow', false, false]]);
+
+  t.mock.timers.tick(10 * 60_000);
+  deliver = true;
+  await alerter.evaluate([site, slow, fine]);
+  active = alerter.activeIncidents([site, slow, fine]);
+  assert.deepEqual(active.map((item) => [item.id, item.confirmed, item.alerted, item.failCount]), [['site', true, true, 3], ['slow', true, true, 3]]);
+
+  await alerter.evaluate([{ ...site, up: true }, slow, fine]);
+  assert.deepEqual(alerter.activeIncidents([{ ...site, up: true }, slow, fine]).map((item) => item.id), ['slow']);
+});
