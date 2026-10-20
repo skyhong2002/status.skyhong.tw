@@ -1,4 +1,4 @@
-import { fetchThroughSocket } from './tunnel-probe.mjs';
+import { fetchThroughSocket, describeTunnelError, tunnelTransportDetail } from './tunnel-probe.mjs';
 import { remoteProbe } from './remote-probe.mjs';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
@@ -131,12 +131,15 @@ async function checkTarget(target) {
     }
     return { ...target, probeSource: target.probeSocket ? 'skyhong.tw via private SSH' : 'skyhong.tw', up, statusCode: response.status, latencyMs, detail, degraded, degradedReason };
   } catch (error) {
-    let detail = error.name === 'AbortError' ? 'Timed out' : 'Unreachable';
-    try {
-      const dnsResult = await resolveHost(new URL(checkUrl).hostname);
-      if (!dnsResult.ok) detail = 'DNS resolution failed';
-    } catch {}
-    return { ...target, up: false, statusCode: null, latencyMs: Date.now() - startedAt, detail, degraded: false, degradedReason: null };
+    let detail = target.probeSocket ? describeTunnelError(error) : error.name === 'AbortError' ? 'Timed out' : 'Unreachable';
+    // A Unix-socket request does not resolve the origin hostname: keep its actual error.
+    if (!target.probeSocket) {
+      try {
+        const dnsResult = await resolveHost(new URL(checkUrl).hostname);
+        if (!dnsResult.ok) detail = 'DNS resolution failed';
+      } catch {}
+    }
+    return { ...target, probeSource: target.probeSocket ? 'skyhong.tw via private SSH' : 'skyhong.tw', up: false, statusCode: null, latencyMs: Date.now() - startedAt, detail, degraded: false, degradedReason: null };
   } finally {
     clearTimeout(timer);
   }
@@ -256,7 +259,7 @@ async function refresh() {
   try { uptimeStore.record(historyItems); state.uptime = uptimeStore.summary(historyItems.map((item) => item.id)); } catch {}
   const alertItems = [
     ...checkedTargets.map((t) => ({ id: `target:${t.id}`, name: t.name, up: t.up, detail: t.statusCode ? `HTTP ${t.statusCode} · ${t.detail}` : t.detail })),
-    ...(state.omniNetworkPath ? [{id: 'omni-monitor-path', name: 'OmniObserve monitoring transport', up: checkedTargets.filter((t) => t.id.startsWith('omni-')).every((t) => t.up), detail: 'Active monitor transport: private SSH tunnel'}] : []),
+    ...(state.omniNetworkPath ? [{id: 'omni-monitor-path', name: 'OmniObserve monitoring transport', up: checkedTargets.filter((t) => t.id.startsWith('omni-')).every((t) => t.up), detail: tunnelTransportDetail(checkedTargets)}] : []),
     ...services.map((s) => ({ id: `runtime:${s.name}`, name: s.name, up: s.up, detail: s.detail })),
     ...remoteItems().map((r) => ({ id: `remote:${r.id}`, name: r.name, up: r.up, detail: r.detail })),
     ...heartbeatItems.map((h) => ({ id: `heartbeat:${h.id}`, name: `${h.name} · heartbeat`, up: h.up, detail: h.detail })),
