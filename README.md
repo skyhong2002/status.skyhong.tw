@@ -101,34 +101,54 @@ deployment. This setting does not cap application data or other services' logs.
 
 Standalone Docker containers are additionally inspected for restart count and OOM-kills, so a crash-looping or out-of-memory container is reported as down instead of appearing to run.
 
-## OmniObserve private monitoring tunnel
+## OmniObserve IIC retirement and historical tunnel
 
-The IIC VM initiates an SSH connection to skyhong.tw:22. It exposes only a Unix
-socket at /var/lib/omni-monitor-tunnel/socket/origin.sock on skyhong.tw, forwarding
-to the VM's own 127.0.0.1:443. No new public TCP port is opened. The dashboard
-bind-mounts the directory (not the socket inode) and joins group 986 to connect.
-HTTPS requests preserve the original hostname/SNI and validate certificates.
+On **2026-10-22**, the owner confirmed that the OmniObserve IIC host was
+intentionally shut down and is **retired**. Production monitoring no longer
+includes its 14 `omni-*` targets (main/sky/ej/ethel/jason/em web and API, Jitsi,
+and monitoring) or the `omniobserve-backup` heartbeat. There is no enabled IIC
+gateway or required live IIC agent. Do not restart IIC or its old tunnel to
+repair monitoring.
 
-The dedicated key only authenticates from 140.110.146.224. SSH shell/exec/SFTP,
-PTY, agent/X11 forwarding and TUN are disabled. Remote Unix forwarding is enabled.
+Remove retired entries only from the production `.env`, after backing it up;
+preserve every other target, heartbeat, and environment value. Do not apply
+`.env.example` wholesale. Without `omni-main-web`, the server stops both the
+direct network-path probe and the synthetic `omni-monitor-path` incident.
+The historical `omni-probe` report is already excluded from live agent checks.
+Keep old heartbeat pings, alert records, and incident events unchanged: retirement
+is not recovery. Archive the JSON state and use SQLite's online backup API before
+retirement so history remains available beyond the normal 24-hour/90-day retention.
+
+The following describes the former setup. `infra/omni-tunnel/` remains a
+historical recovery template, not an active deployment requirement. The unused
+socket directory mount and group membership may remain; they do not start a tunnel.
+
+The IIC VM previously initiated an SSH connection to skyhong.tw:22. It exposed
+only a Unix socket at /var/lib/omni-monitor-tunnel/socket/origin.sock on skyhong.tw,
+forwarding to the VM's own 127.0.0.1:443. No new public TCP port was opened.
+The dashboard used a directory bind mount (not the socket inode) and group 986
+to connect. HTTPS requests preserved the original hostname/SNI and validated certificates.
+
+The dedicated key was restricted to 140.110.146.224. SSH shell/exec/SFTP,
+PTY, agent/X11 forwarding and TUN were disabled. Remote Unix forwarding was enabled.
 In this OpenSSH version AllowTcpForwarding=no also prevents the Unix listener
-through a shared permission check. Therefore the configuration enables remote
-forwarding but uses PermitListen=none to deny all TCP listener requests; live
+through a shared permission check. Therefore the historical configuration enabled remote
+forwarding but used PermitListen=none to deny all TCP listener requests; live
 negative tests verified command and TCP forwarding requests fail. See
 https://github.com/openssh/openssh-portable/blob/V_9_6_P1/session.c and channels.c.
 
-The client pins the server host key, runs without privileges and uses keepalives,
-ExitOnForwardFailure and Docker restart. The socket is mode 0660, in a private
+The client pinned the server host key, ran without privileges and used keepalives,
+ExitOnForwardFailure and Docker restart. The socket had mode 0660, in a private
 directory. A forced SSH disconnect recovered automatically in 4.7 seconds;
 wrong-certificate requests failed validation and all 14 endpoints returned 200.
 
-IIC Dokploy Compose: 7B7WV1k8Z5_5PRhTLL-2c (omni-monitor-tunnel-lkblfa).
-Public recovery templates are under infra/omni-tunnel/. Supply the private key
-through TUNNEL_PRIVATE_KEY_B64 in Dokploy; never commit key material.
+Former IIC Dokploy Compose: 7B7WV1k8Z5_5PRhTLL-2c (omni-monitor-tunnel-lkblfa).
+Historical recovery templates are under infra/omni-tunnel/. The private key was
+supplied through TUNNEL_PRIVATE_KEY_B64 in Dokploy; never commit key material.
 
-The status page explicitly labels the source as skyhong.tw via private SSH.
-Direct public routing from skyhong.tw to IIC is still tested and disclosed in
-expanded details, but is not an active incident when the selected monitoring
-transport is healthy. This verifies origin health, not global public reachability.
+Before retirement, the status page labeled the source as skyhong.tw via private SSH.
+Direct public routing from skyhong.tw to IIC was also tested and disclosed in
+expanded details, but was not an active incident when the selected monitoring
+transport was healthy. This verified origin health, not global public reachability.
 The temporary SkyLabMac HTTP probe is disabled; its ordinary process agent remains.
 The retired standalone uptime containers are removed, with their data volume retained.
