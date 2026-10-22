@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { buildGatewaySnapshot, maskAccount, migrateGatewayReports, parseGatewayHosts, probeGateway, sanitizeGatewayReport, windowLabel } from './gateway.mjs';
 import { countIncidents, renderMetrics } from './observability.mjs';
 import { buildReadinessSnapshot } from './health.mjs';
+import { createAlerter } from './alerts.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const now = Date.parse('2026-10-02T12:00:00Z');
 const minutesAgo = (minutes) => new Date(now - minutes * 60_000).toISOString();
@@ -93,6 +97,23 @@ test('gateway incidents count toward the badge and metrics but never readiness',
   assert.match(metrics, /sky_up\{kind="gateway",id="gateway:sky-mini:probe",name="AI gateway · sky-mini · tailnet listener"\} 0/);
   assert.match(metrics, /sky_gateway_quota_used_percent\{window="primary",minutes="10080"\} 62/);
   assert.equal(buildReadinessSnapshot({ state, intervalMs: 60_000 }, now).ok, true);
+});
+
+test('a real account match recovers an incident and allows a later mismatch to alert', async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'gateway-usage-recovery-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const sends = [];
+  const alerter = await createAlerter({ dataDir, failureThreshold: 1,
+    send: async (payload) => { sends.push(payload); return true; } });
+  for (const accountMatches of [false, true, false]) {
+    const snap = snapshot({ report: rawReport({ usage: { ...rawReport().usage, accountMatches } }) });
+    await alerter.evaluate(snap.checks.filter((check) => check.id === 'gateway:quota-account'));
+  }
+  assert.deepEqual(sends.map((payload) => payload.embeds[0].title.slice(0, 2)), ['🔴', '🟢', '🔴']);
+  const unknown = snapshot({ report: rawReport({ usage: { ...rawReport().usage, accountMatches: null } }) });
+  assert.equal(unknown.checks.some((check) => check.id === 'gateway:quota-account'), false);
+  const stale = snapshot({ report: rawReport({ usage: { ...rawReport().usage, checkedAt: minutesAgo(30) } }) });
+  assert.equal(stale.checks.some((check) => check.id === 'gateway:quota-account'), false);
 });
 
 test('without a probe key or an agent report the section is absent', () => {

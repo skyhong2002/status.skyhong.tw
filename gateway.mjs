@@ -177,7 +177,10 @@ export function buildGatewaySnapshot({ hosts, probes = {}, probeConfigured, repo
       checks.push({ id: 'gateway:quota-telemetry', name: 'AI gateway · subscription usage telemetry', up: usageFresh, detail });
     }
     if (usageFresh) {
-      if (u.accountMatches === false) checks.push({ id: 'gateway:quota-account', name: 'AI gateway · usage account', up: false, detail: 'Usage was read for a different account than the gateway credential' });
+      if (typeof u.accountMatches === 'boolean') checks.push({
+        id: 'gateway:quota-account', name: 'AI gateway · usage account', up: u.accountMatches,
+        detail: u.accountMatches ? 'Usage account matches an enabled gateway login' : 'Usage was read for a different account than the gateway credential',
+      });
       for (const window of windows) {
         const resets = window.resetsAt ? ` · resets ${window.resetsAt}` : '';
         checks.push({ id: `gateway:quota:${window.id}`, name: `AI gateway · ${window.label.toLowerCase()}`, up: window.up && !u.limitReached, detail: `${window.usedPercent}% used${resets}` });
