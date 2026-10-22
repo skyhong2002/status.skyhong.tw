@@ -39,6 +39,8 @@ The server re-validates each block, masks the account address, and publishes onl
 
 Used-up quota is shown in each account's row but never alerts: it resumes when the window resets, and the account policy has already moved traffic to the next account. A host that sends this block no longer gets the older single `Codex credential` check.
 
+Usage telemetry reads the CLI's current account and checks its identity against every enabled Codex login in the gateway auth directory, including T3 mirror files with non-legacy names. Non-renewable logins require an unexpired timestamp; disabled or withdrawn mirrors cannot satisfy the match. Account IDs take precedence over email, so a different workspace remains a mismatch. This reading covers that one CLI account; it does not claim usage coverage for every account in the pool.
+
 To add a host: enable it in `ai-gateway/hosts.json`, add it to `AI_GATEWAYS_JSON` in the host `.env` (a reachable `url`, and an `agent` that runs `gateway_telemetry.py` there), and restart the dashboard.
 
 ## Long-term availability

@@ -175,6 +175,41 @@ def account_health(path=ACCOUNT_STATE_PATH):
     }
 
 
+def codex_usage_identities(auth_dir=GATEWAY_AUTH_DIR, now=None):
+    """Identify enabled Codex logins, including T3 mirrors with non-legacy names.
+
+    Only identity metadata leaves this helper. A non-renewable login must have
+    a valid future expiry; disabled or withdrawn mirrors cannot prove a match.
+    """
+    now = now or datetime.now(timezone.utc)
+    identities = []
+    for path in sorted(Path(auth_dir).glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        provider = data.get("type")
+        if provider != "codex" and not (provider is None and path.name.startswith("codex-")):
+            continue
+        if data.get("disabled") is True or any(data.get(flag) is True for flag in (
+            "mirror_withdrawn", "mirror_expired", "t3_sync_expired",
+        )):
+            continue
+        if not data.get("refresh_token"):
+            if not data.get("access_token"):
+                continue
+            try:
+                expires = datetime.fromisoformat(str(data.get("expired", "")).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if expires.tzinfo is None or expires <= now:
+                continue
+        identities.append({"email": data.get("email"), "accountId": data.get("account_id")})
+    return identities
+
+
 def codex_executable():
     found = shutil.which("codex")
     if found:
@@ -243,13 +278,18 @@ def summarize_rate_limits(rate_limits, account, credential_identity, now):
             "resetsAt": iso_utc(datetime.fromtimestamp(resets, timezone.utc)) if isinstance(resets, (int, float)) else None,
         })
     account_matches = None
-    if credential_identity:
+    if credential_identity is not None:
+        identities = credential_identity if isinstance(credential_identity, list) else [credential_identity]
         usage_account = rate_limits.get("accountId") or (account.get("workspaceRouting") or {}).get("chatgptAccountId")
         usage_email = (account.get("account") or {}).get("email")
-        if credential_identity.get("accountId") and usage_account:
-            account_matches = credential_identity["accountId"] == usage_account
-        elif credential_identity.get("email") and usage_email:
-            account_matches = credential_identity["email"] == usage_email
+        account_ids = [identity["accountId"] for identity in identities if identity.get("accountId")]
+        emails = [identity["email"] for identity in identities if identity.get("email")]
+        if account_ids and usage_account:
+            account_matches = usage_account in account_ids
+        elif emails and usage_email:
+            account_matches = usage_email in emails
+        elif not identities:
+            account_matches = False
     if not windows:
         return {"checkedAt": iso_utc(now), "ok": False, "detail": "Usage response had no windows", "windows": []}
     return {
@@ -326,7 +366,7 @@ def gateway_report(now=None, state_path=GATEWAY_STATE_PATH, *, key=None, base_ur
         local = {"up": False, "statusCode": None, "latencyMs": 0, "detail": "status client key missing", "aliasesListed": {}}
     local["target"] = listener_target(base_url)
 
-    credential, identity = codex_credential(Path(auth_dir))
+    credential, _ = codex_credential(Path(auth_dir))
 
     if key and local["up"] and due(cache.get("inference"), GATEWAY_INFERENCE_INTERVAL_SECONDS, now):
         status, payload, latency, error = gateway_request("/chat/completions", key, {
@@ -340,7 +380,8 @@ def gateway_report(now=None, state_path=GATEWAY_STATE_PATH, *, key=None, base_ur
     if read_usage and (due(cache.get("usage"), GATEWAY_USAGE_INTERVAL_SECONDS, now) or not (cache.get("usage") or {}).get("ok")):
         try:
             rate_limits, account = read_codex_rate_limits()
-            cache["usage"] = summarize_rate_limits(rate_limits, account, identity, now)
+            identities = codex_usage_identities(auth_dir, now)
+            cache["usage"] = summarize_rate_limits(rate_limits, account, identities, now)
         except (OSError, RuntimeError, ValueError) as error:
             previous = cache.get("usage") or {}
             # Keep the last good reading (and its timestamp) so the server can judge staleness.
