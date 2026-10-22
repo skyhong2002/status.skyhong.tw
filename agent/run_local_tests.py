@@ -2,13 +2,21 @@
 """Run fixture regressions with connections/processes denied before test imports.
 
 Four legacy tests that open loopback HTTP fixtures (including gateway_report)
-are explicitly skipped. No agent main, telemetry, real job or Docker CLI runs.
+are explicitly skipped. Gateway reports may use temporary fixtures and mocked
+I/O; no agent main, real telemetry, real job or Docker CLI runs.
 """
 import os
 from pathlib import Path
 import sys
 
 sys.dont_write_bytecode = True
+
+PRIVATE_DIRECTORIES = (".config", ".hermes", ".docker", ".colima", ".cli-proxy-api", "Projects")
+FORBIDDEN_PATHS = tuple(
+    os.path.join(home, directory)
+    for home in (str(Path.home()), "/Users/skyhong")
+    for directory in PRIVATE_DIRECTORIES
+) + ("/opt/homebrew/etc/cliproxyapi.conf",)
 
 
 def deny_io(event, args):
@@ -18,11 +26,8 @@ def deny_io(event, args):
     if event == "open" and isinstance(args[0], (str, bytes, os.PathLike)):
         path = os.fsdecode(args[0])
         # Deny real local diagnostic/agent/gateway sources as well as outbound I/O.
-        forbidden = ("/Users/skyhong/.config", "/Users/skyhong/.hermes", "/Users/skyhong/.docker",
-                     "/Users/skyhong/.colima", "/Users/skyhong/.cli-proxy-api",
-                     "/Users/skyhong/Projects", "/opt/homebrew/etc/cliproxyapi.conf")
         resolved = os.path.abspath(path)
-        if any(resolved == root or resolved.startswith(root + os.sep) for root in forbidden):
+        if any(resolved == root or resolved.startswith(root + os.sep) for root in FORBIDDEN_PATHS):
             raise RuntimeError("offline tests deny production data reads")
 
 
@@ -38,7 +43,7 @@ import skylabmac_agent_test
 
 
 def forbidden_call(*args, **kwargs):
-    raise AssertionError("offline tests forbid agent main and gateway telemetry")
+    raise AssertionError("offline tests forbid agent main and real gateway telemetry I/O")
 
 
 NETWORK_FIXTURES = (
@@ -55,8 +60,12 @@ setattr(skylabmac_agent_test.GatewayReportTest, name, unittest.skip("gateway_rep
 
 with patch.object(skylabmac_agent, "main", forbidden_call), \
      patch.object(skylabmac_agent, "gateway_report", forbidden_call), \
-     patch.object(gateway_telemetry, "gateway_report", forbidden_call), \
+     patch.object(gateway_telemetry, "gateway_client_key", forbidden_call), \
+     patch.object(gateway_telemetry, "gateway_request", forbidden_call), \
+     patch.object(gateway_telemetry, "read_codex_rate_limits", forbidden_call), \
      patch.object(skylabmac_agent_test, "gateway_report", forbidden_call):
+    # Keep gateway_report importable: fixture tests supply temporary paths and
+    # override these I/O boundaries. The audit hook still guards every test.
     suite = unittest.defaultTestLoader.discover(str(Path(__file__).parent), pattern="*_test.py")
     outcome = unittest.TextTestRunner(verbosity=2).run(suite)
 raise SystemExit(0 if outcome.wasSuccessful() else 1)

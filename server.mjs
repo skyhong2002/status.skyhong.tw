@@ -1,4 +1,4 @@
-import { fetchThroughSocket } from './tunnel-probe.mjs';
+import { fetchThroughSocket, describeTunnelError, tunnelTransportDetail } from './tunnel-probe.mjs';
 import { remoteProbe } from './remote-probe.mjs';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
@@ -70,6 +70,8 @@ let gatewayReports = {};
 let history = {};
 const state = { checkedAt: null, targets: [], services: [], certificates: [], domains: [], heartbeats: [], agents: {}, gateway: null, alertDelivery: {}, errors: [], history24h: {}, uptime: {}, maintenance: null, thresholds: { certWarnDays, domainWarnDays } };
 const alerter = await createAlerter({ dataDir });
+// The items the alerter judged on the latest check, so /api/incidents reports exactly what pages.
+let alertItemsLatest = [];
 const heartbeats = await createHeartbeats({ dataDir });
 const uptimeStore = await createUptimeStore({ dataDir });
 const publicAssets = new Map(await Promise.all([
@@ -129,12 +131,15 @@ async function checkTarget(target) {
     }
     return { ...target, probeSource: target.probeSocket ? 'skyhong.tw via private SSH' : 'skyhong.tw', up, statusCode: response.status, latencyMs, detail, degraded, degradedReason };
   } catch (error) {
-    let detail = error.name === 'AbortError' ? 'Timed out' : 'Unreachable';
-    try {
-      const dnsResult = await resolveHost(new URL(checkUrl).hostname);
-      if (!dnsResult.ok) detail = 'DNS resolution failed';
-    } catch {}
-    return { ...target, up: false, statusCode: null, latencyMs: Date.now() - startedAt, detail, degraded: false, degradedReason: null };
+    let detail = target.probeSocket ? describeTunnelError(error) : error.name === 'AbortError' ? 'Timed out' : 'Unreachable';
+    // A Unix-socket request does not resolve the origin hostname: keep its actual error.
+    if (!target.probeSocket) {
+      try {
+        const dnsResult = await resolveHost(new URL(checkUrl).hostname);
+        if (!dnsResult.ok) detail = 'DNS resolution failed';
+      } catch {}
+    }
+    return { ...target, probeSource: target.probeSocket ? 'skyhong.tw via private SSH' : 'skyhong.tw', up: false, statusCode: null, latencyMs: Date.now() - startedAt, detail, degraded: false, degradedReason: null };
   } finally {
     clearTimeout(timer);
   }
@@ -254,7 +259,7 @@ async function refresh() {
   try { uptimeStore.record(historyItems); state.uptime = uptimeStore.summary(historyItems.map((item) => item.id)); } catch {}
   const alertItems = [
     ...checkedTargets.map((t) => ({ id: `target:${t.id}`, name: t.name, up: t.up, detail: t.statusCode ? `HTTP ${t.statusCode} · ${t.detail}` : t.detail })),
-    ...(state.omniNetworkPath ? [{id: 'omni-monitor-path', name: 'OmniObserve monitoring transport', up: checkedTargets.filter((t) => t.id.startsWith('omni-')).every((t) => t.up), detail: 'Active monitor transport: private SSH tunnel'}] : []),
+    ...(state.omniNetworkPath ? [{id: 'omni-monitor-path', name: 'OmniObserve monitoring transport', up: checkedTargets.filter((t) => t.id.startsWith('omni-')).every((t) => t.up), detail: tunnelTransportDetail(checkedTargets)}] : []),
     ...services.map((s) => ({ id: `runtime:${s.name}`, name: s.name, up: s.up, detail: s.detail })),
     ...remoteItems().map((r) => ({ id: `remote:${r.id}`, name: r.name, up: r.up, detail: r.detail })),
     ...heartbeatItems.map((h) => ({ id: `heartbeat:${h.id}`, name: `${h.name} · heartbeat`, up: h.up, detail: h.detail })),
@@ -263,6 +268,7 @@ async function refresh() {
     ...state.domains.filter((d) => d.ok && d.daysRemaining != null).map((d) => ({ id: `domain:${d.domain}`, name: `${d.domain} · domain registration`, up: d.daysRemaining > domainWarnDays, detail: `expires in ${d.daysRemaining}d` })),
   ];
   alertItems.push(...gatewayItems);
+  alertItemsLatest = alertItems;
   state.maintenance = activeMaintenance();
   if (!state.maintenance) { try { await alerter.evaluate(alertItems); } catch {} }
   state.alertDelivery = { incident: alerter.deliveryStatus() };
@@ -423,6 +429,12 @@ const server = createServer(async (request, response) => {
     return testAlerts(request, response);
   }
   if (url.pathname === '/api/status') return json(response, state);
+  // Active incidents for automated responders (Hermes): the same items and thresholds that page Discord.
+  if (url.pathname === '/api/incidents') return json(response, {
+    checkedAt: state.checkedAt, maintenance: state.maintenance, monitored: alertItemsLatest.length,
+    active: alerter.activeIncidents(alertItemsLatest), recent: alerter.recentIncidents(20),
+    alertDelivery: state.alertDelivery, errors: state.errors,
+  });
   // Raw points, split from /api/status so the dashboard payload stays small.
   if (url.pathname === '/api/history') return json(response, history);
   if (url.pathname === '/livez') return json(response, { ok: true });

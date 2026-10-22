@@ -5,11 +5,43 @@ import dgram from 'node:dgram';
 import dns from 'node:dns';
 import dnsPromises from 'node:dns/promises';
 import childProcess from 'node:child_process';
+import { lstatSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 
 const deny = () => { throw new Error('offline tests deny outbound I/O and child commands'); };
-net.Socket.prototype.connect = deny;
-tls.connect = deny;
+const missingSocketFixtures = new Set();
+function guardConnect(connect) {
+  return function (...args) {
+    // Node also passes normalized connect arguments as [options, callback].
+    const options = Array.isArray(args[0]) ? args[0][0] : args[0];
+    const path = options?.path;
+    if (typeof path !== 'string' || !missingSocketFixtures.has(path)) return deny();
+    try {
+      lstatSync(path);
+    } catch (error) {
+      if (error.code === 'ENOENT') return connect.apply(this, args);
+    }
+    return deny();
+  };
+}
+net.Socket.prototype.connect = guardConnect(net.Socket.prototype.connect);
+tls.connect = guardConnect(tls.connect);
+
+// Only a missing path in a new private directory may reach the OS. Existing
+// sockets, arbitrary Unix paths and all TCP/TLS destinations remain denied.
+export async function withMissingSocketFixture(run) {
+  const directory = mkdtempSync(join(tmpdir(), 'status-test-'));
+  const path = join(directory, 'missing.sock');
+  missingSocketFixtures.add(path);
+  try {
+    return await run(path);
+  } finally {
+    missingSocketFixtures.delete(path);
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 dgram.Socket.prototype.send = deny;
 dgram.Socket.prototype.connect = deny;
 for (const api of [dns, dnsPromises, dns.Resolver.prototype, dnsPromises.Resolver.prototype]) {

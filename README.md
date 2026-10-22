@@ -10,6 +10,7 @@ The public interface uses a Kener-inspired status banner, monitor grouping, and 
 
 - `GET /api/status` — the dashboard snapshot. The 24-hour history is published as `history24h`: per monitor, a 48-character string (one 30-minute bin each; `0` no data, `1` all checks passed, `2` at least one failure) plus the 24-hour uptime percentage and check count. This keeps the payload around 70 KB.
 - `GET /api/history` — the raw `{ t, up }` points behind that summary (about 1,440 per monitor), split out because they are several megabytes.
+- `GET /api/incidents` — what is failing right now, for automated responders: every currently failing incident item (the same items and IDs that page Discord) with `failingSince`, `failCount`, `confirmed` (failed long enough to page, whether or not the webhook delivered) and `alerted`, plus the 20 most recent down/recovery events, the active maintenance window, and incident delivery status. Sky's private Hermes agent polls it every five minutes to investigate and repair confirmed incidents; see *Automated response* below.
 
 ## Add a product
 
@@ -38,6 +39,8 @@ The server re-validates each block, masks the account address, and publishes onl
 
 Used-up quota is shown in each account's row but never alerts: it resumes when the window resets, and the account policy has already moved traffic to the next account. A host that sends this block no longer gets the older single `Codex credential` check.
 
+Usage telemetry reads the CLI's current account and checks its identity against every enabled Codex login in the gateway auth directory, including T3 mirror files with non-legacy names. Non-renewable logins require an unexpired timestamp; disabled or withdrawn mirrors cannot satisfy the match. Account IDs take precedence over email, so a different workspace remains a mismatch. This reading covers that one CLI account; it does not claim usage coverage for every account in the pool.
+
 To add a host: enable it in `ai-gateway/hosts.json`, add it to `AI_GATEWAYS_JSON` in the host `.env` (a reachable `url`, and an `agent` that runs `gateway_telemetry.py` there), and restart the dashboard.
 
 ## Long-term availability
@@ -49,6 +52,10 @@ Alongside the rolling 24-hour history, each check is folded into per-day uptime 
 Set `DISCORD_ALERT_WEBHOOK_URL` to receive a Discord message whenever a monitored item goes down or recovers. This covers every public target, Docker service, remote agent item, heartbeat, certificate and domain expiry, and AI gateway check. If the alert webhook is unset it falls back to `DISCORD_WEBHOOK_URL`; if neither is set, no alerts are sent.
 
 An item must fail `ALERT_FAILURE_THRESHOLD` consecutive checks (default 2) before a down alert fires, which suppresses single-check flapping. Each incident sends exactly one down message and one recovery message; the recovery note includes how long the item was down. Incident state is persisted to `/data/alerts.json`, so a restart neither loses an open incident nor re-sends an alert that already went out. A webhook that fails to deliver is retried on the next cycle rather than being marked as sent. Delivery attempts, successes, and failures are persisted and exposed through the public status API and Prometheus metrics. An authenticated `POST /api/alerts/test` checks the Discord webhook end to end.
+
+## Automated response
+
+Sky's private Hermes agent (on mint-mbp, repository `skyhong2002/hermes-agent`) watches `GET /api/incidents` every five minutes. When an incident becomes `confirmed`, or the dashboard itself stops answering, it signs in to this VPS over Tailscale with a dedicated key (`hermes@mint-mbp`, restricted to Mint's tailnet address in `~ubuntu/.ssh/authorized_keys`), investigates, applies reversible fixes, and reports to Discord `#ops`. It may also improve this dashboard's coverage; such changes land here as ordinary commits and deployments, following *Deployment* below. Remove that `authorized_keys` line to revoke its access.
 
 ## Heartbeats (dead-man's switch)
 
@@ -82,6 +89,12 @@ Before deployment, back up `.env`, then run `node scripts/configure_production_e
 
 The application runs as UID/GID 1000 with all capabilities dropped, a read-only root filesystem, a writable `/data` volume, and a small temporary filesystem. Security headers include HSTS, CSP, frame denial, and a restrictive permissions policy.
 
+The Compose configuration limits each service's Docker JSON logs to 20 MiB per
+file, retaining three files per container. Existing containers keep their current
+logging settings until recreated in a normal deployment; pulling this file alone
+does not activate rotation. Verify the resulting `HostConfig.LogConfig` after
+deployment. This setting does not cap application data or other services' logs.
+
 ## SkyLabMac agent
 
 `agent/skylabmac_agent.py` is a standard-library-only LaunchAgent. It sends a summary of selected macOS processes to the dashboard once a minute, along with host metrics — root disk usage, load average, and memory pressure — each flagged when it crosses a threshold. It authenticates with a bearer token stored only in `~/.config/sky-status-agent.json` with mode `600`; it does not open any listening port on SkyLabMac.
@@ -90,34 +103,54 @@ The application runs as UID/GID 1000 with all capabilities dropped, a read-only 
 
 Standalone Docker containers are additionally inspected for restart count and OOM-kills, so a crash-looping or out-of-memory container is reported as down instead of appearing to run.
 
-## OmniObserve private monitoring tunnel
+## OmniObserve IIC retirement and historical tunnel
 
-The IIC VM initiates an SSH connection to skyhong.tw:22. It exposes only a Unix
-socket at /var/lib/omni-monitor-tunnel/socket/origin.sock on skyhong.tw, forwarding
-to the VM's own 127.0.0.1:443. No new public TCP port is opened. The dashboard
-bind-mounts the directory (not the socket inode) and joins group 986 to connect.
-HTTPS requests preserve the original hostname/SNI and validate certificates.
+On **2026-10-22**, the owner confirmed that the OmniObserve IIC host was
+intentionally shut down and is **retired**. Production monitoring no longer
+includes its 14 `omni-*` targets (main/sky/ej/ethel/jason/em web and API, Jitsi,
+and monitoring) or the `omniobserve-backup` heartbeat. There is no enabled IIC
+gateway or required live IIC agent. Do not restart IIC or its old tunnel to
+repair monitoring.
 
-The dedicated key only authenticates from 140.110.146.224. SSH shell/exec/SFTP,
-PTY, agent/X11 forwarding and TUN are disabled. Remote Unix forwarding is enabled.
+Remove retired entries only from the production `.env`, after backing it up;
+preserve every other target, heartbeat, and environment value. Do not apply
+`.env.example` wholesale. Without `omni-main-web`, the server stops both the
+direct network-path probe and the synthetic `omni-monitor-path` incident.
+The historical `omni-probe` report is already excluded from live agent checks.
+Keep old heartbeat pings, alert records, and incident events unchanged: retirement
+is not recovery. Archive the JSON state and use SQLite's online backup API before
+retirement so history remains available beyond the normal 24-hour/90-day retention.
+
+The following describes the former setup. `infra/omni-tunnel/` remains a
+historical recovery template, not an active deployment requirement. The unused
+socket directory mount and group membership may remain; they do not start a tunnel.
+
+The IIC VM previously initiated an SSH connection to skyhong.tw:22. It exposed
+only a Unix socket at /var/lib/omni-monitor-tunnel/socket/origin.sock on skyhong.tw,
+forwarding to the VM's own 127.0.0.1:443. No new public TCP port was opened.
+The dashboard used a directory bind mount (not the socket inode) and group 986
+to connect. HTTPS requests preserved the original hostname/SNI and validated certificates.
+
+The dedicated key was restricted to 140.110.146.224. SSH shell/exec/SFTP,
+PTY, agent/X11 forwarding and TUN were disabled. Remote Unix forwarding was enabled.
 In this OpenSSH version AllowTcpForwarding=no also prevents the Unix listener
-through a shared permission check. Therefore the configuration enables remote
-forwarding but uses PermitListen=none to deny all TCP listener requests; live
+through a shared permission check. Therefore the historical configuration enabled remote
+forwarding but used PermitListen=none to deny all TCP listener requests; live
 negative tests verified command and TCP forwarding requests fail. See
 https://github.com/openssh/openssh-portable/blob/V_9_6_P1/session.c and channels.c.
 
-The client pins the server host key, runs without privileges and uses keepalives,
-ExitOnForwardFailure and Docker restart. The socket is mode 0660, in a private
+The client pinned the server host key, ran without privileges and used keepalives,
+ExitOnForwardFailure and Docker restart. The socket had mode 0660, in a private
 directory. A forced SSH disconnect recovered automatically in 4.7 seconds;
 wrong-certificate requests failed validation and all 14 endpoints returned 200.
 
-IIC Dokploy Compose: 7B7WV1k8Z5_5PRhTLL-2c (omni-monitor-tunnel-lkblfa).
-Public recovery templates are under infra/omni-tunnel/. Supply the private key
-through TUNNEL_PRIVATE_KEY_B64 in Dokploy; never commit key material.
+Former IIC Dokploy Compose: 7B7WV1k8Z5_5PRhTLL-2c (omni-monitor-tunnel-lkblfa).
+Historical recovery templates are under infra/omni-tunnel/. The private key was
+supplied through TUNNEL_PRIVATE_KEY_B64 in Dokploy; never commit key material.
 
-The status page explicitly labels the source as skyhong.tw via private SSH.
-Direct public routing from skyhong.tw to IIC is still tested and disclosed in
-expanded details, but is not an active incident when the selected monitoring
-transport is healthy. This verifies origin health, not global public reachability.
+Before retirement, the status page labeled the source as skyhong.tw via private SSH.
+Direct public routing from skyhong.tw to IIC was also tested and disclosed in
+expanded details, but was not an active incident when the selected monitoring
+transport was healthy. This verified origin health, not global public reachability.
 The temporary SkyLabMac HTTP probe is disabled; its ordinary process agent remains.
 The retired standalone uptime containers are removed, with their data volume retained.

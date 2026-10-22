@@ -107,6 +107,7 @@ export async function createAlerter(options = {}) {
       record.detail = item.detail;
       if (item.up) {
         record.failCount = 0;
+        record.failingSince = null;
         if (record.alerted) {
           const now = Date.now();
           const timestamp = new Date(now).toISOString();
@@ -127,7 +128,10 @@ export async function createAlerter(options = {}) {
         }
       } else {
         record.failCount += 1;
-        if (record.failCount >= failureThreshold && !record.alerted) {
+        record.failingSince ??= Date.now();
+        // A check may ask to stay quiet until it has been failing for a while (alertAfterMs).
+        const overdue = !item.alertAfterMs || Date.now() - record.failingSince >= item.alertAfterMs;
+        if (record.failCount >= failureThreshold && overdue && !record.alerted) {
           const now = Date.now();
           const payload = { embeds: [{
             title: `🔴 ${item.name}`,
@@ -138,7 +142,7 @@ export async function createAlerter(options = {}) {
           try {
             if (await attemptDelivery(payload)) {
               record.alerted = true;
-              record.downSince = now;
+              record.downSince = record.failingSince;
               await logIncident({ at: new Date(now).toISOString(), id: item.id, name: item.name, type: 'down', detail: item.detail || 'No detail' });
             }
           } catch {}
@@ -153,6 +157,26 @@ export async function createAlerter(options = {}) {
     return incidents.slice(0, Math.max(0, limit));
   }
 
+  // The failing items among `items`, joined with their incident record. `confirmed` means the item has
+  // failed long enough to page (threshold and alertAfterMs), whether or not the webhook delivered it.
+  function activeIncidents(items) {
+    const now = Date.now();
+    return items.filter((item) => !item.up).map((item) => {
+      const record = state[item.id] || {};
+      const failCount = record.failCount || 0;
+      const overdue = !item.alertAfterMs || (record.failingSince != null && now - record.failingSince >= item.alertAfterMs);
+      return {
+        id: item.id,
+        name: item.name,
+        detail: item.detail || null,
+        failingSince: record.failingSince != null ? new Date(record.failingSince).toISOString() : null,
+        failCount,
+        confirmed: failCount >= failureThreshold && overdue,
+        alerted: Boolean(record.alerted),
+      };
+    });
+  }
+
   async function testDelivery() {
     if (!delivery.configured) return false;
     return attemptDelivery({ embeds: [{
@@ -163,5 +187,5 @@ export async function createAlerter(options = {}) {
     }] });
   }
 
-  return { evaluate, recentIncidents, testDelivery, deliveryStatus: () => ({ ...delivery }) };
+  return { evaluate, recentIncidents, activeIncidents, testDelivery, deliveryStatus: () => ({ ...delivery }) };
 }

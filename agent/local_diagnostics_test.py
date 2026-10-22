@@ -36,6 +36,13 @@ class OfflineBoundaryTest(unittest.TestCase):
             skylabmac_agent.main()
         with self.assertRaisesRegex(AssertionError, "gateway telemetry"):
             skylabmac_agent.gateway_report()
+        import gateway_telemetry
+        for call in (gateway_telemetry.gateway_client_key, gateway_telemetry.gateway_request,
+                     gateway_telemetry.read_codex_rate_limits):
+            with self.subTest(call=call), self.assertRaisesRegex(AssertionError, "gateway telemetry"):
+                call()
+        with self.assertRaisesRegex(RuntimeError, "production data"):
+            gateway_telemetry.gateway_report()
 
 
 class BambooJobTest(unittest.TestCase):

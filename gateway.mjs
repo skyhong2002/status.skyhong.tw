@@ -13,6 +13,7 @@ const REPORT_STALE_MS = 3 * 60_000; // the agent reports every 60 s
 const USAGE_STALE_MS = 20 * 60_000; // the agent re-reads usage every 5 min
 const INFERENCE_STALE_MS = 90 * 60_000; // the agent runs one tiny inference every 30 min
 const ACCOUNT_STATE_STALE_MS = 10 * 60_000; // account_failover.py runs every minute
+const UPSTREAM_PAUSE_ALERT_MS = 15 * 60_000; // the gateway's cooldowns after upstream errors usually clear within minutes
 const PROVIDERS = { codex: 'Codex', claude: 'Claude' };
 const MIRROR_KINDS = ['t3', 'peer'];
 
@@ -162,7 +163,7 @@ export function buildGatewaySnapshot({ hosts, probes = {}, probeConfigured, repo
     ? hostSnapshot({ host, probe: probes[host.name], probeConfigured: probeConfigured && Boolean(host.url), entry: reports[host.agent], reportFresh: isFresh(reports[host.agent]), policy, now })
     : { name: host.name, enabled: false, note: host.note, listeners: [], aliases: [], credential: null, inference: null, checks: [] });
 
-  const checks = snapshotHosts.flatMap((host) => host.checks);
+  const checks = [...snapshotHosts.flatMap((host) => host.checks), ...upstreamChecks(snapshotHosts, policy)];
   let usage = null;
   if (usageEntry) {
     const u = usageEntry.report.usage;
@@ -176,7 +177,10 @@ export function buildGatewaySnapshot({ hosts, probes = {}, probeConfigured, repo
       checks.push({ id: 'gateway:quota-telemetry', name: 'AI gateway · subscription usage telemetry', up: usageFresh, detail });
     }
     if (usageFresh) {
-      if (u.accountMatches === false) checks.push({ id: 'gateway:quota-account', name: 'AI gateway · usage account', up: false, detail: 'Usage was read for a different account than the gateway credential' });
+      if (typeof u.accountMatches === 'boolean') checks.push({
+        id: 'gateway:quota-account', name: 'AI gateway · usage account', up: u.accountMatches,
+        detail: u.accountMatches ? 'Usage account matches an enabled gateway login' : 'Usage was read for a different account than the gateway credential',
+      });
       for (const window of windows) {
         const resets = window.resetsAt ? ` · resets ${window.resetsAt}` : '';
         checks.push({ id: `gateway:quota:${window.id}`, name: `AI gateway · ${window.label.toLowerCase()}`, up: window.up && !u.limitReached, detail: `${window.usedPercent}% used${resets}` });
@@ -185,6 +189,20 @@ export function buildGatewaySnapshot({ hosts, probes = {}, probeConfigured, repo
   }
 
   return { configured: true, revision: policy.revision, hosts: snapshotHosts, usage, checks };
+}
+
+// Every host shares the same accounts and upstream, so a model paused after upstream errors
+// usually drops out of every gateway at once. Report it once per model, and only alert when
+// the pause outlasts the gateway's cooldown: short pauses recover on their own.
+function upstreamChecks(hosts, policy) {
+  const models = [...new Set(Object.values(policy.aliases))];
+  return models.flatMap((model) => {
+    const watched = hosts.filter((host) => host.aliases.some((a) => a.model === model && a.listed !== null));
+    if (!watched.length) return [];
+    const paused = watched.filter((host) => host.aliases.some((a) => a.model === model && a.paused)).map((host) => host.name);
+    const detail = paused.length ? `Paused after upstream errors on ${paused.join(', ')}` : `Served by ${watched.length === 1 ? watched[0].name : 'every gateway'}`;
+    return [{ id: `gateway:upstream:${model}`, name: `AI gateway · ${model} upstream`, up: !paused.length, detail, alertAfterMs: UPSTREAM_PAUSE_ALERT_MS }];
+  });
 }
 
 function hostSnapshot({ host, probe, probeConfigured, entry, reportFresh, policy, now }) {
@@ -216,12 +234,17 @@ function hostSnapshot({ host, probe, probeConfigured, entry, reportFresh, policy
     const isListed = listed ? listed.has(alias) : reportFresh && report.local.up ? report.local.aliasesListed[alias] === true : null;
     const configModel = report?.config?.aliases?.[alias] ?? null;
     const configMatches = report ? configModel === model : null;
+    // The gateway hides a model while every credential for it cools down after upstream errors,
+    // and its aliases go with it. That is the upstream's trouble, not this host's config.
+    const paused = isListed === false && configMatches !== false && listed !== null && !listed.has(model);
     let detail = `→ ${model}`;
-    if (isListed === false) detail = 'Not listed by the gateway';
+    if (paused) detail = `${model} paused after upstream errors`;
+    else if (isListed === false) detail = 'Not listed by the gateway';
     else if (configMatches === false) detail = configModel ? `Gateway maps to ${configModel}; policy says ${model}` : 'Missing from gateway config';
     const up = isListed !== false && configMatches !== false;
-    if (isListed !== null || configMatches !== null) checks.push({ id: `${prefix}:alias:${alias}`, name: label(`${alias} alias`), up, detail });
-    return { alias, model, listed: isListed, configMatches, up, detail };
+    // A paused model is one fleet-wide check (see upstreamChecks), so this host's alias stays up.
+    if (isListed !== null || configMatches !== null) checks.push({ id: `${prefix}:alias:${alias}`, name: label(`${alias} alias`), up: up || paused, detail });
+    return { alias, model, listed: isListed, configMatches, paused, up, detail };
   });
   const configRevisionMatches = report?.config?.revision && policy.revision ? report.config.revision === policy.revision : null;
 

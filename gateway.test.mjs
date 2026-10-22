@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { buildGatewaySnapshot, maskAccount, migrateGatewayReports, parseGatewayHosts, probeGateway, sanitizeGatewayReport, windowLabel } from './gateway.mjs';
 import { countIncidents, renderMetrics } from './observability.mjs';
 import { buildReadinessSnapshot } from './health.mjs';
+import { createAlerter } from './alerts.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const now = Date.parse('2026-10-02T12:00:00Z');
 const minutesAgo = (minutes) => new Date(now - minutes * 60_000).toISOString();
@@ -46,7 +50,7 @@ test('a healthy gateway reports every check up and publishes no secrets', () => 
 
 test('raises incidents for a down listener, a missing alias, and config drift', () => {
   assert.deepEqual(failing(snapshot({ probe: { up: false, detail: 'Timed out', models: [] } })), ['probe']);
-  assert.deepEqual(failing(snapshot({ probe: { up: true, models: ['sky-fast'] } })), ['alias:sky-quality']);
+  assert.deepEqual(failing(snapshot({ probe: { up: true, models: ['sky-fast', 'gpt-6.1-sol'] } })), ['alias:sky-quality']);
   const drift = rawReport({ config: { revision: '2026-09-01', aliases: { 'sky-fast': 'gpt-5.6-luna', 'sky-quality': 'gpt-6.1-sol' } } });
   const snap = snapshot({ report: drift });
   assert.deepEqual(failing(snap), ['alias:sky-fast']);
@@ -93,6 +97,23 @@ test('gateway incidents count toward the badge and metrics but never readiness',
   assert.match(metrics, /sky_up\{kind="gateway",id="gateway:sky-mini:probe",name="AI gateway · sky-mini · tailnet listener"\} 0/);
   assert.match(metrics, /sky_gateway_quota_used_percent\{window="primary",minutes="10080"\} 62/);
   assert.equal(buildReadinessSnapshot({ state, intervalMs: 60_000 }, now).ok, true);
+});
+
+test('a real account match recovers an incident and allows a later mismatch to alert', async (t) => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'gateway-usage-recovery-'));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const sends = [];
+  const alerter = await createAlerter({ dataDir, failureThreshold: 1,
+    send: async (payload) => { sends.push(payload); return true; } });
+  for (const accountMatches of [false, true, false]) {
+    const snap = snapshot({ report: rawReport({ usage: { ...rawReport().usage, accountMatches } }) });
+    await alerter.evaluate(snap.checks.filter((check) => check.id === 'gateway:quota-account'));
+  }
+  assert.deepEqual(sends.map((payload) => payload.embeds[0].title.slice(0, 2)), ['🔴', '🟢', '🔴']);
+  const unknown = snapshot({ report: rawReport({ usage: { ...rawReport().usage, accountMatches: null } }) });
+  assert.equal(unknown.checks.some((check) => check.id === 'gateway:quota-account'), false);
+  const stale = snapshot({ report: rawReport({ usage: { ...rawReport().usage, checkedAt: minutesAgo(30) } }) });
+  assert.equal(stale.checks.some((check) => check.id === 'gateway:quota-account'), false);
 });
 
 test('without a probe key or an agent report the section is absent', () => {
@@ -153,6 +174,22 @@ test('a failure on one host is attributed to that host only', () => {
   assert.deepEqual(failingIds(fleetSnapshot({ reports: { vps: { receivedAt: minutesAgo(10), report: vpsReport() } } })), ['gateway:skyhong-blog:telemetry']);
   // A silent sky-mini agent does not add a second, usage-telemetry incident.
   assert.deepEqual(failingIds(fleetSnapshot({ reports: { skylabmac: { receivedAt: minutesAgo(10), report: rawReport() } } })), ['gateway:sky-mini:telemetry']);
+});
+
+test('a model paused after upstream errors is one fleet-wide check that waits before alerting', () => {
+  const paused = { up: true, latencyMs: 30, detail: 'ok', models: ['sky-fast', 'gpt-6-luna'] };
+  const snap = fleetSnapshot({ probes: { 'sky-mini': paused, 'skyhong-blog': paused } });
+  assert.deepEqual(failingIds(snap), ['gateway:upstream:gpt-6.1-sol']);
+  const check = snap.checks.find((c) => c.id === 'gateway:upstream:gpt-6.1-sol');
+  assert.equal(check.detail, 'Paused after upstream errors on sky-mini, skyhong-blog');
+  assert.equal(check.alertAfterMs, 15 * 60_000);
+  const quality = snap.hosts[0].aliases[1];
+  assert.deepEqual([quality.paused, quality.up, quality.detail], [true, false, 'gpt-6.1-sol paused after upstream errors']);
+  // Config drift on a paused model is still this host's problem.
+  const drift = vpsReport({ config: { revision: '2026-10-02', aliases: { 'sky-fast': 'gpt-6-luna', 'sky-quality': 'gpt-5.6-sol' } } });
+  assert.deepEqual(failingIds(fleetSnapshot({ probes: { 'sky-mini': paused, 'skyhong-blog': paused }, reports: { vps: { receivedAt: minutesAgo(0), report: drift } } })),
+    ['gateway:skyhong-blog:alias:sky-quality', 'gateway:upstream:gpt-6.1-sol']);
+  assert.equal(fleetSnapshot().checks.find((c) => c.id === 'gateway:upstream:gpt-6.1-sol').up, true);
 });
 
 const accountsBlock = (accounts, checkedAt = minutesAgo(1)) => ({ checkedAt, accounts: accounts.map((a, i) => ({

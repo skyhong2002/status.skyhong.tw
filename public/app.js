@@ -283,7 +283,7 @@ function gatewayHostPanel(host, history) {
       rows.push(row(listener.name, `${listener.source}${latency}${uptime == null ? '' : ` · ${pct(uptime)} over 24 h`}`, listener.up, listener.up ? 'Serving' : 'Down', { tag: 'listener' }));
     }
     for (const alias of host.aliases) {
-      const label = alias.up ? 'Mapped' : alias.listed === false ? 'Missing' : 'Drift';
+      const label = alias.up ? 'Mapped' : alias.paused ? 'Paused' : alias.listed === false ? 'Missing' : 'Drift';
       rows.push(row(alias.alias, alias.detail, alias.listed === null && alias.configMatches === null ? null : alias.up, label, { tag: 'alias' }));
     }
     for (const account of host.accounts?.list || []) {

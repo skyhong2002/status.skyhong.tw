@@ -40,6 +40,39 @@ mem_up=$(bool "$mem_pct" "$MEM_WARN")
 load_up=$(awk -v l1="$load1" -v l5="$load5" -v c="$cores" -v m="$LOAD_WARN_PER_CORE" \
   'BEGIN{print (l1 < c*m || l5 < c*m) ? "true" : "false"}')
 
+# Information only: leave the existing disk health/incident identity unchanged.
+# The path parameter allows isolated fixtures; production always uses the fixed flag.
+reboot_flag_detail() {
+  local flag="$1" stamp now modified days
+  if [ ! -e "$flag" ] && [ ! -L "$flag" ]; then
+    # Bash existence tests also fail on EACCES. Only an accessible parent lets
+    # us treat this as absence; normal parent aliases such as /var/run are valid.
+    if [ ! -d "${flag%/*}" ] || [ ! -r "${flag%/*}" ] || [ ! -x "${flag%/*}" ]; then
+      printf '; reboot flag unknown'
+      return 0
+    fi
+    return 0
+  fi
+  if stamp=$(LC_ALL=C timeout 2s stat --format='%F:%Y' -- "$flag" 2>/dev/null) \
+      && [[ "$stamp" =~ ^regular(\ empty)?\ file:([0-9]{1,12})$ ]]; then
+    modified=$((10#${BASH_REMATCH[2]}))
+    if now=$(timeout 2s date +%s 2>/dev/null) && [[ "$now" =~ ^[0-9]{1,12}$ ]]; then
+      now=$((10#$now))
+      if (( modified >= 946684800 && modified <= now )); then
+        days=$(((now - modified) / 86400))
+        if (( days > 36500 )); then
+          printf '; reboot flag present (36500+d old)'
+        else
+          printf '; reboot flag present (%sd old)' "$days"
+        fi
+        return 0
+      fi
+    fi
+  fi
+  printf '; reboot flag unknown'
+}
+reboot_info=$(reboot_flag_detail /var/run/reboot-required) || reboot_info='; reboot flag unknown'
+
 # Gateway telemetry is optional and must never block the host report.
 gateway=""
 if [ -f "$GATEWAY_CONFIG" ] && [ -n "${AI_GATEWAY_KEY:-}" ] && command -v python3 > /dev/null; then
@@ -52,7 +85,7 @@ gateway_field=""
 
 payload=$(cat <<JSON
 {"host":"$(hostname)","items":[
- {"id":"disk-root","name":"Disk /","kind":"Host metric","up":$disk_up,"detail":"${disk_pct}% used · ${disk_used}/${disk_total}"},
+ {"id":"disk-root","name":"Disk /","kind":"Host metric","up":$disk_up,"detail":"${disk_pct}% used · ${disk_used}/${disk_total}${reboot_info}"},
  {"id":"memory","name":"Memory","kind":"Host metric","up":$mem_up,"detail":"${mem_pct}% used · ${mem_used}/${mem_total} MB"},
  {"id":"load","name":"Load average","kind":"Host metric","up":$load_up,"detail":"1m ${load1} · 5m ${load5} over ${cores} cores"}
 ]${gateway_field}}
