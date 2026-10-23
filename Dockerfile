@@ -17,9 +17,12 @@ COPY seo.mjs ./
 COPY agent ./agent
 COPY public ./public
 
+ARG GIT_SHA=unknown
+
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV DATA_DIR=/data
+ENV APP_VERSION=$GIT_SHA
 
 USER node
 EXPOSE 3000

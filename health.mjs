@@ -6,7 +6,7 @@ function deliveryUsable(status) {
 }
 
 export function buildHealthSnapshot(options, now = Date.now()) {
-  const { state, intervalMs, dockerConfigured } = options;
+  const { state, intervalMs, dockerConfigured, version = 'unknown' } = options;
   const checkedAt = Date.parse(state.checkedAt || '');
   const errors = state.errors || [];
   const checks = {
@@ -15,16 +15,16 @@ export function buildHealthSnapshot(options, now = Date.now()) {
     dockerConnected: !dockerConfigured || ((state.services || []).length > 0 && !errors.some((error) => error.startsWith('Docker'))),
     incidentWebhookUsable: deliveryUsable(state.alertDelivery?.incident),
   };
-  return { ok: Object.values(checks).every(Boolean), checkedAt: state.checkedAt, checks };
+  return { ok: Object.values(checks).every(Boolean), checkedAt: state.checkedAt, checks, version };
 }
 
 // Routing must remain available to receive reports when a monitored dependency fails.
-export function buildReadinessSnapshot({ state, intervalMs }, now = Date.now()) {
+export function buildReadinessSnapshot({ state, intervalMs, version = 'unknown' }, now = Date.now()) {
   const checkedAt = Date.parse(state.checkedAt || '');
   const checks = {
     refreshFresh: Number.isFinite(checkedAt) && now - checkedAt <= intervalMs * 3,
   };
-  return { ok: checks.refreshFresh, checkedAt: state.checkedAt, checks };
+  return { ok: checks.refreshFresh, checkedAt: state.checkedAt, checks, version };
 }
 
 export { deliveryUsable };

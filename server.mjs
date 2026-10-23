@@ -28,6 +28,8 @@ const heartbeatToken = process.env.HEARTBEAT_TOKEN || process.env.AGENT_INGEST_T
 const externalHeartbeatUrl = process.env.EXTERNAL_HEARTBEAT_URL || '';
 const maintenanceWindows = parseJson(process.env.MAINTENANCE_JSON, []);
 const publicOrigin = process.env.PUBLIC_ORIGIN || 'https://status.skyhong.tw';
+// The git commit baked in at build time (Dockerfile GIT_SHA), for deploy verification and rollback.
+const appVersion = process.env.APP_VERSION || 'unknown';
 const gatewayHosts = parseGatewayHosts(process.env.AI_GATEWAYS_JSON, process.env.AI_GATEWAY_URL || '');
 // Every gateway accepts the same client keys, so one `status` key probes them all.
 const gatewayKey = process.env.AI_GATEWAY_KEY || '';
@@ -399,6 +401,7 @@ function healthSnapshot(now = Date.now()) {
     state,
     intervalMs,
     dockerConfigured: Boolean(dockerApiUrl),
+    version: appVersion,
   }, now);
 }
 
@@ -443,14 +446,14 @@ const server = createServer(async (request, response) => {
   if (url.pathname === '/api/history') return json(response, history);
   if (url.pathname === '/livez') return json(response, { ok: true });
   if (url.pathname === '/readyz') {
-    const readiness = buildReadinessSnapshot({ state, intervalMs });
+    const readiness = buildReadinessSnapshot({ state, intervalMs, version: appVersion });
     return json(response, readiness, readiness.ok ? 200 : 503);
   }
   if (url.pathname === '/healthz') {
     const health = healthSnapshot();
     return json(response, health, health.ok ? 200 : 503);
   }
-  if (url.pathname === '/metrics') return text(response, renderMetrics(state), 'text/plain; version=0.0.4; charset=utf-8');
+  if (url.pathname === '/metrics') return text(response, renderMetrics(state, { version: appVersion }), 'text/plain; version=0.0.4; charset=utf-8');
   if (url.pathname === '/badge.svg') return text(response, renderBadge(countIncidents(state, state.thresholds)), 'image/svg+xml; charset=utf-8', 'public, max-age=60');
   if (url.pathname === '/robots.txt') return text(response, renderRobots(publicOrigin), 'text/plain; charset=utf-8', 'public, max-age=3600');
   if (url.pathname === '/sitemap.xml') return text(response, renderSitemap(publicOrigin), 'application/xml; charset=utf-8', 'public, max-age=3600');

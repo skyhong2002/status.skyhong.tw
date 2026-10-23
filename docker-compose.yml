@@ -24,7 +24,10 @@ services:
       - internal
 
   status-dashboard:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_SHA: "${GIT_SHA:-unknown}"
     image: status-skyhong-tw:latest
     user: "1000:1000"
     group_add: ["986"]

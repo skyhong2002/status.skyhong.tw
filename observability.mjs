@@ -30,7 +30,7 @@ export function countIncidents(state, thresholds = {}) {
   return count;
 }
 
-export function renderMetrics(state) {
+export function renderMetrics(state, { version = 'unknown' } = {}) {
   const lines = [];
   const gauge = (name, help, rows) => {
     lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} gauge`);
@@ -72,6 +72,7 @@ export function renderMetrics(state) {
   gauge('sky_alert_webhook_configured', 'Whether a Discord alert webhook is configured', deliveryRows);
   gauge('sky_alert_delivery_healthy', 'Whether the latest attempted Discord alert delivery succeeded', deliveryHealthyRows);
   gauge('sky_incidents_total', 'Current number of active incidents', [['', countIncidents(state, state.thresholds)]]);
+  gauge('status_build_info', 'Git commit of the running dashboard build', [[`version="${escapeLabel(version)}"`, 1]]);
   return `${lines.join('\n')}\n`;
 }
 

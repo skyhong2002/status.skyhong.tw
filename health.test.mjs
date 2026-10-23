@@ -31,6 +31,14 @@ function healthyState() {
   };
 }
 
+test('health and readiness report the build version, defaulting to unknown', () => {
+  const options = { state: healthyState(), intervalMs: 60_000, dockerConfigured: true };
+  assert.equal(buildHealthSnapshot(options, now).version, 'unknown');
+  assert.equal(buildReadinessSnapshot(options, now).version, 'unknown');
+  assert.equal(buildHealthSnapshot({ ...options, version: '5324613' }, now).version, '5324613');
+  assert.equal(buildReadinessSnapshot({ ...options, version: '5324613' }, now).version, '5324613');
+});
+
 test('deep health passes with fresh collectors and usable webhooks', () => {
   const health = buildHealthSnapshot({
     state: healthyState(), intervalMs: 60_000, dockerConfigured: true,
