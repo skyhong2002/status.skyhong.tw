@@ -91,7 +91,7 @@ The Compose stack joins `dokploy-network` and uses Dokploy's existing Traefik mi
 
 Before deployment, back up `.env`, then run `node scripts/configure_production_env.mjs .env .env.example` to apply the checked-in target/heartbeat configuration and generate a dedicated heartbeat token when absent. The script replaces `STATUS_TARGETS_JSON` and `HEARTBEATS_JSON` wholesale, so only run it when `.env.example` matches production; for any other change, edit the host `.env` directly.
 
-Build with the commit baked in: `GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build`. After deployment, check that `version` in `GET /readyz` (also in `/healthz` and `status_build_info` in `/metrics`) matches that commit; a plain `docker compose up --build` reports `unknown`.
+Build with the commit baked in: `GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d --build`. After deployment, check that `version` in `GET /readyz` (also in `/healthz` and `sky_build_info` in `/metrics`) matches that commit; a plain `docker compose up --build` reports `unknown`.
 
 The application runs as UID/GID 1000 with all capabilities dropped, a read-only root filesystem, a writable `/data` volume, and a small temporary filesystem. Security headers include HSTS, CSP, frame denial, and a restrictive permissions policy.
 

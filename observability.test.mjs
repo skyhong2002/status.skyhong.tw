@@ -39,9 +39,9 @@ test('renders Prometheus exposition with escaped labels and expected metrics', (
   assert.match(out, /# TYPE sky_up gauge/);
 });
 
-test('exports the build version as status_build_info', () => {
-  assert.match(renderMetrics(state), /# HELP status_build_info .+\n# TYPE status_build_info gauge\nstatus_build_info\{version="unknown"\} 1\n/);
-  assert.match(renderMetrics(state, { version: '5324613' }), /^status_build_info\{version="5324613"\} 1$/m);
+test('exports the build version as sky_build_info', () => {
+  assert.match(renderMetrics(state), /# HELP sky_build_info .+\n# TYPE sky_build_info gauge\nsky_build_info\{version="unknown"\} 1\n/);
+  assert.match(renderMetrics(state, { version: '5324613' }), /^sky_build_info\{version="5324613"\} 1$/m);
 });
 
 test('badge reflects operational vs incident state', () => {
