@@ -83,7 +83,7 @@ Set `MAINTENANCE_JSON` to an array of `{ start, end, reason }` ISO windows to pa
 
 ## Search indexing
 
-Only the dashboard itself, `PUBLIC_ORIGIN/`, is meant for search (`seo.mjs`). It carries `<link rel="canonical">` to that URL, and `GET /sitemap.xml` lists only it; `GET /robots.txt` allows crawling and names the sitemap. Every other response — `/api/*`, metrics, health, feed, badge, assets, token endpoints, 404s — is served with `X-Robots-Tag: noindex`. They are deliberately not disallowed in robots.txt: the page renders from `/api/status`, and the footer links `/metrics`, `/feed.xml`, and `/badge.svg`, so crawlers must be able to fetch them to see the noindex. Adding a page to the sitemap means adding it to `INDEXABLE_PATHS`; never add API, metrics, or private host data.
+Only the dashboard itself, `PUBLIC_ORIGIN/`, is meant for search (`seo.mjs`). It carries `<link rel="canonical">` to that URL, and `GET /sitemap.xml` lists only it; `GET /robots.txt` allows crawling and names the sitemap. Every other response — `/api/*`, metrics, health, feed, badge, assets, token endpoints, 404s — is served with `X-Robots-Tag: noindex`. They are deliberately not disallowed in robots.txt: the page renders from `/api/status`, and the footer links `/metrics`, `/feed.xml`, and `/badge.svg`, so crawlers must be able to fetch them to see the noindex. Adding a page to the sitemap means adding it to `INDEXABLE_PATHS`; never add API, metrics, or private host data. The rollout record, including the n8n handoff, is in `docs/gsc-20261023.md`.
 
 ## Deployment
 
