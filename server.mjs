@@ -12,6 +12,7 @@ import { createUptimeStore } from './uptime.mjs';
 import { renderMetrics, renderBadge, renderFeed, countIncidents, PROBE_AGENT_IDS } from './observability.mjs';
 import { buildGatewaySnapshot, migrateGatewayReports, parseGatewayHosts, probeGateway, sanitizeGatewayReport } from './gateway.mjs';
 import { pruneHistory, recordHistory as appendHistory, summarizeHistory } from './history.mjs';
+import { renderRobots, renderSitemap, robotsTag } from './seo.mjs';
 
 const port = Number(process.env.PORT || 3000);
 const dataDir = process.env.DATA_DIR || './data';
@@ -90,7 +91,8 @@ const publicAssets = new Map(await Promise.all([
   const index = publicAssets.get('/');
   index.body = Buffer.from(index.body.toString('utf8')
     .replace('/styles.css', `/styles.css?v=${version('/styles.css')}`)
-    .replace('/app.js', `/app.js?v=${version('/app.js')}`));
+    .replace('/app.js', `/app.js?v=${version('/app.js')}`)
+    .replace('rel="canonical" href="/"', `rel="canonical" href="${publicOrigin}/"`));
 }
 
 function parseJson(value, fallback) {
@@ -414,6 +416,8 @@ async function testAlerts(request, response) {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url, 'http://localhost');
+  const robots = robotsTag(url.pathname);
+  if (robots) response.setHeader('x-robots-tag', robots);
   const agentMatch = url.pathname.match(/^\/api\/agents\/([a-z0-9-]{1,64})$/i);
   if (request.method === 'POST' && agentMatch) {
     if (rateLimited(`ingest:${clientIp(request)}`)) { response.writeHead(429); return response.end('Too many requests'); }
@@ -448,6 +452,8 @@ const server = createServer(async (request, response) => {
   }
   if (url.pathname === '/metrics') return text(response, renderMetrics(state), 'text/plain; version=0.0.4; charset=utf-8');
   if (url.pathname === '/badge.svg') return text(response, renderBadge(countIncidents(state, state.thresholds)), 'image/svg+xml; charset=utf-8', 'public, max-age=60');
+  if (url.pathname === '/robots.txt') return text(response, renderRobots(publicOrigin), 'text/plain; charset=utf-8', 'public, max-age=3600');
+  if (url.pathname === '/sitemap.xml') return text(response, renderSitemap(publicOrigin), 'application/xml; charset=utf-8', 'public, max-age=3600');
   if (url.pathname === '/feed.xml') return text(response, renderFeed(alerter.recentIncidents(50), publicOrigin), 'application/rss+xml; charset=utf-8', 'public, max-age=60');
   const publicAsset = publicAssets.get(url.pathname);
   if (publicAsset) return asset(response, publicAsset);

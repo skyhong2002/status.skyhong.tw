@@ -13,6 +13,7 @@ COPY uptime.mjs ./
 COPY history.mjs ./
 COPY observability.mjs ./
 COPY gateway.mjs ./
+COPY seo.mjs ./
 COPY agent ./agent
 COPY public ./public
 
