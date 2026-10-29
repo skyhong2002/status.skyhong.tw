@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Report sky-server's Docker services and systemd jobs to the status dashboard.
 
-Runs once a minute from sky-status-agent.timer as root: the Docker socket and
-Chumei's 0600 pipeline state both require it. Configuration comes from the
-environment (EnvironmentFile=/etc/sky-status-agent.env):
+Runs once a minute from the user sky-status-agent.timer. Docker group access
+is required; only the root-owned Chumei completion artifact is read via sudo.
+Configuration comes from the private user EnvironmentFile:
 
     STATUS_ENDPOINT=https://status.skyhong.tw
     AGENT_INGEST_TOKEN=...
 """
 
+import fnmatch
 import json
 import os
 import socket
@@ -20,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 AGENT_ID = "sky-server"
-JOB_STATE_PATH = Path(os.environ.get("STATE_DIRECTORY", "/var/lib/sky-status-agent")) / "systemd-jobs.json"
+JOB_STATE_PATH = Path(os.environ.get("STATE_DIRECTORY", str(Path.home() / ".local/state/sky-status-agent"))) / "systemd-jobs.json"
 COMMAND_TIMEOUT_SECONDS = 20
 CHUMEI_PIPELINE_STATE_PATH = Path("/srv/chumei/state/pipeline.json")
 # The pipeline runs every three hours; allow an hour for a delayed/long run.
@@ -47,6 +48,95 @@ TIMERS = [
     ("harmonica-calendar", "Harmonica calendar sync", "harmonica-calendar-maintenance"),
     ("mayor2026-pipeline", "Mayor2026 pipeline", "mayor2026-pipeline"),
 ]
+# Match deployment-generated container names without pinning Swarm task IDs.
+CONTAINER_PATTERNS = [
+    ("chumei-web", "chumei-prod-*-web-1"), ("myzilla", "myzilla"),
+    *[("urtube-" + role, "urtube-*-" + role + "-1") for role in
+      ("app", "ingest", "worker", "backup", "matching-worker", "matching-compare", "matching-compute")],
+    ("ai-gateway-ha", "ai-gateway-ha"),
+    ("harmonica-web", "harmonica-w2-*-web-1"),
+    ("chumei-preview", "mini-w1-chumei-preview-*-web-1"),
+    ("harmonica-preview", "mini-w1-harmonica-preview-*-web-1"),
+    ("mayor2026-web", "mini-w1-mayor2026-*-web-1"),
+    ("rsshub-public", "mini-w1-rsshub-*-rsshub-1"),
+    ("rsshub-frontend", "mini-w1-rsshub-*-frontend-1"),
+    *[(name, name) for name in ("tag-db", "tag-redis", "tag-adminer", "tag-alloy", "tag-loki", "blog-observe-redis", "dokploy-traefik")],
+    ("dokploy", "dokploy.1.*"), ("dokploy-postgres", "dokploy-postgres.1.*"),
+]
+USER_TIMERS = [(name, name, name) for name in (
+    "tag-availability-monitor", "tag-backup", "tag-legacy-continuous",
+    "tag-legacy-nearline", "tag-legacy-quarantine", "tag-nearline-check-2h",
+    "tag-vocabulary-export", "tag-vocabulary-fast", "tag-vocabulary-reconcile",
+    "blog-observe-active-favicons", "myzilla-digest", "myzilla-health-monitor",
+    "reporter-health-monitor", "infovore-health-monitor")]
+# Disabled tag-nearline-index has intentionally never been scheduled.
+USER_SERVICES = [name + ".service" for name in (
+    "tag-analysis", "tag-web", "tag-worker", "tag-nearline-operations",
+    "tag-telegram-artifacts-preview", "blog-observe-edge", "blog-observe-worker",
+    "blog-observe-gateway@blue", "blog-observe-gateway@green",
+    "blog-observe-web@blue", "blog-observe-web@green",
+    "traffic-observe-web", "traffic-observe-worker", "host-observer", "weblog-cloudflared")]
+SYSTEM_SERVICES = ["cloudflared-sky-server.service"]
+HTTP_CHECKS = [
+    ("tag-http", "http://127.0.0.1:18130/", None, (200,)),
+    ("site-http", "http://127.0.0.1:18150/", None, (200,)),
+    ("weblog-http", "http://127.0.0.1:18160/", None, (200,)),
+    ("blog-http", "http://127.0.0.1:18172/", None, (200, 308)),
+    ("traffic-http", "http://127.0.0.1:18150/", "traffic.observe.tw", (308,)),
+    ("urtube-http", "http://127.0.0.1/healthz", "urtube.observe.tw", (200,)),
+    ("rsshub-http", "http://127.0.0.1/healthz", "rss.observe.tw", (200,)),
+    ("myzilla-http", "http://127.0.0.1/health", "myzilla.observe.tw", (200,)),
+    ("host-observer-http", "http://127.0.0.1:19120/health", None, (200,)),
+]
+
+class NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
+def http_items():
+    opener = urllib.request.build_opener(NoRedirects())
+    items = []
+    for identifier, url, host, accepted in HTTP_CHECKS:
+        request = urllib.request.Request(url, headers={"Host": host} if host else {})
+        try:
+            with opener.open(request, timeout=5) as response:
+                code = response.status
+        except urllib.error.HTTPError as error:
+            code = error.code
+            error.close()
+        except (OSError, urllib.error.URLError):
+            code = 0
+        items.append(dict(id=identifier, name=identifier, kind="HTTP endpoint",
+                          up=code in accepted, detail=f"HTTP {code}" if code else "Endpoint unavailable"))
+    return items
+
+
+def extra_items(docker_output, system_output, user_output, job_state):
+    states = parse_docker_states(docker_output)
+    items = []
+    for identifier, pattern in CONTAINER_PATTERNS:
+        matches = [name for name in states if fnmatch.fnmatchcase(name, pattern)]
+        results = [container_status(name, states) for name in matches]
+        items.append(dict(id=identifier, name=identifier, kind="Docker container",
+                          up=bool(matches) and all(up for up, _ in results),
+                          detail="; ".join(sorted(set(detail for _, detail in results))) if matches else "Container not found"))
+    system = parse_systemctl_show(system_output)
+    user = parse_systemctl_show(user_output)
+    for unit in SYSTEM_SERVICES + USER_SERVICES:
+        properties = (system if unit in SYSTEM_SERVICES else user).get(unit, {})
+        up = properties.get("LoadState") == "loaded" and properties.get("ActiveState") == "active"
+        items.append(dict(id=unit, name=unit, kind="systemd service", up=up,
+                          detail=properties.get("ActiveState", "Unit missing")))
+    for identifier, name, unit in USER_TIMERS:
+        up, detail = timer_job_status(unit, user, job_state.get("user:" + unit))
+        service = user.get(unit + ".service", {})
+        if service.get("ActiveState") in ("inactive", "failed") and service.get("Result"):
+            job_state["user:" + unit] = service["Result"]
+        items.append(dict(id=identifier, name=name, kind="Scheduled job", up=up, detail=detail))
+    return items
+
+
 SYSTEMD_PROPERTIES = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestampMonotonic"
 
 
@@ -134,7 +224,13 @@ def chumei_pipeline_freshness(path=CHUMEI_PIPELINE_STATE_PATH,
     """
     now = now or datetime.now(timezone.utc)
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        try:
+            raw = Path(path).read_text(encoding="utf-8")
+        except PermissionError:
+            if Path(path) != CHUMEI_PIPELINE_STATE_PATH:
+                raise
+            raw = command_output(["sudo", "-n", "/usr/bin/cat", str(CHUMEI_PIPELINE_STATE_PATH)])
+        data = json.loads(raw)
         results = data["last_results"]
         if not isinstance(results, dict):
             raise ValueError("missing results")
@@ -205,12 +301,19 @@ def main():
         print("status-agent config error: AGENT_INGEST_TOKEN required", file=sys.stderr)
         return 1
 
+    names = command_output(["docker", "ps", "-a", "--format", "{{.Names}}"]).splitlines()
+    selected = [name for name in names if name in {c for _, _, c in CONTAINERS}
+                or any(fnmatch.fnmatchcase(name, pattern) for _, pattern in CONTAINER_PATTERNS)]
     docker_output = command_output(
-        ["docker", "inspect", "--format", "{{.Name}}\t{{json .State}}", *(c for _, _, c in CONTAINERS)])
+        ["docker", "inspect", "--format", "{{.Name}}\t{{json .State}}", *selected]) if selected else ""
     units = [f"{unit}.{suffix}" for _, _, unit in TIMERS for suffix in ("timer", "service")]
-    systemd_output = command_output(["systemctl", "show", f"--property={SYSTEMD_PROPERTIES}", *units])
+    systemd_output = command_output(["systemctl", "show", f"--property={SYSTEMD_PROPERTIES}", *units, *SYSTEM_SERVICES])
     job_state = load_job_state()
     items = collect_items(docker_output, systemd_output, job_state)
+    user_units = [f"{unit}.{suffix}" for _, _, unit in USER_TIMERS for suffix in ("timer", "service")]
+    user_output = command_output(["systemctl", "--user", "show", f"--property={SYSTEMD_PROPERTIES}", *user_units, *USER_SERVICES])
+    items.extend(extra_items(docker_output, systemd_output, user_output, job_state))
+    items.extend(http_items())
     save_job_state(job_state)
 
     body = json.dumps({"host": socket.gethostname(), "items": items}).encode("utf-8")

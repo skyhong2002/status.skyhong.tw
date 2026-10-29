@@ -207,12 +207,29 @@ longer monitored.
 - `chumei-pipeline` keeps the four-hour publish-freshness policy above, now
   reading `/srv/chumei/state/pipeline.json`.
 
-It runs as a hardened root oneshot (Docker socket and the 0600 Chumei state
-need it) from `sky-status-agent.timer` every minute:
+It runs from the **user** `sky-status-agent.timer` every minute. The user is
+already in the Docker group and can inspect system units read-only. The only
+privileged read is `sudo -n /usr/bin/cat /srv/chumei/state/pipeline.json`, used
+when that root-owned completion artifact cannot be read directly. Its contents
+are parsed in memory, never printed. Existing passwordless sudo is required.
+The private `%h/.config/sky-status-agent.env` reuses the existing ingest token;
+no new registration or third-party secret is needed. State is kept under the
+user StateDirectory. Disable the old system timer before enabling the user timer.
 
-```sh
-sudo install -D -m 0644 agent/skyserver_agent.py /opt/sky-status-agent/skyserver_agent.py
-sudo install -m 0644 agent/systemd/sky-status-agent.{service,timer} /etc/systemd/system/
-# /etc/sky-status-agent.env (root, 0600): STATUS_ENDPOINT=…, AGENT_INGEST_TOKEN=…
-sudo systemctl daemon-reload && sudo systemctl enable --now sky-status-agent.timer
-```
+Coverage also includes MyZilla, all seven Urtube containers, AI gateway HA,
+mini-w1 web/previews/RSSHub, Harmonica web, tag-observe dependencies and Dokploy.
+Deployment-generated container names use explicit role patterns; missing,
+stopped or unhealthy members fail. User service checks cover the active tag,
+blog blue/green slots, traffic, weblog tunnel and host observer; system scope
+covers the main Cloudflare connector and existing Chumei/Harmonica/Mayor timers.
+User timers include tag/blog, MyZilla and reporter/infovore monitors. Deliberately
+disabled tag-nearline-index and chumei-promo-files are excluded. HTTP checks use
+loopback addresses and explicit Host headers and do not follow redirects; only
+the documented blog/traffic redirects are accepted. Host observer HTTP 503 and
+failed monitor jobs remain visible as real failures.
+
+Install the service/timer in `~/.config/systemd/user/`, then run
+`systemctl --user daemon-reload` and
+`systemctl --user enable --now sky-status-agent.timer`.
+The status website is separately deployed by a Compose build on its VPS;
+agent-only changes require no website deploy or git push.

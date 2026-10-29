@@ -1,17 +1,11 @@
 [Unit]
 Description=Report sky-server services to status.skyhong.tw
-Wants=network-online.target
-After=network-online.target docker.service
 
 [Service]
 Type=oneshot
-# Root is required for the Docker socket and Chumei's 0600 pipeline state.
-EnvironmentFile=/etc/sky-status-agent.env
-ExecStart=/usr/bin/python3 -B /opt/sky-status-agent/skyserver_agent.py
+EnvironmentFile=%h/.config/sky-status-agent.env
+ExecStart=/usr/bin/python3 -B %h/Projects/status.skyhong.tw/agent/skyserver_agent.py
 StateDirectory=sky-status-agent
 StateDirectoryMode=0700
-TimeoutStartSec=90
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=yes
+TimeoutStartSec=120
+UMask=0077

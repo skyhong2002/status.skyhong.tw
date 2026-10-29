@@ -207,3 +207,41 @@ class CollectItemsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class MigrationCoverageTest(unittest.TestCase):
+    def test_missing_targets_fail_closed(self):
+        from skyserver_agent import extra_items
+        items = extra_items('', '', '', {})
+        self.assertTrue(items)
+        self.assertTrue(all(not item['up'] for item in items))
+        self.assertEqual(len(items), len({item['id'] for item in items}))
+
+    def test_generated_names_and_unhealthy_members(self):
+        from skyserver_agent import extra_items
+        docker = docker_line('dokploy.1.new-task', Status='running', Health={'Status': 'healthy'})
+        items = {item['id']: item for item in extra_items(docker, '', '', {})}
+        self.assertTrue(items['dokploy']['up'])
+        docker += '\n' + docker_line('dokploy.1.failed-task', Status='exited', ExitCode=1)
+        items = {item['id']: item for item in extra_items(docker, '', '', {})}
+        self.assertFalse(items['dokploy']['up'])
+
+    def test_system_and_user_units_do_not_mix(self):
+        from skyserver_agent import extra_items
+        block = 'Id=host-observer.service\nLoadState=loaded\nActiveState=active'
+        wrong = {item['id']: item for item in extra_items('', block, '', {})}
+        right = {item['id']: item for item in extra_items('', '', block, {})}
+        self.assertFalse(wrong['host-observer.service']['up'])
+        self.assertTrue(right['host-observer.service']['up'])
+
+    def test_http_503_remains_down_and_expected_redirect_is_up(self):
+        import skyserver_agent as agent
+        from unittest.mock import MagicMock, patch
+        opener = MagicMock()
+        response = MagicMock()
+        response.__enter__.return_value.status = 308
+        with patch.object(agent, 'HTTP_CHECKS', [('traffic', 'http://127.0.0.1/', 'traffic.observe.tw', (308,))]), patch.object(agent.urllib.request, 'build_opener', return_value=opener):
+            opener.open.return_value = response
+            self.assertTrue(agent.http_items()[0]['up'])
+        with patch.object(agent, 'HTTP_CHECKS', [('observer', 'http://127.0.0.1/health', None, (200,))]), patch.object(agent.urllib.request, 'build_opener', return_value=opener):
+            opener.open.side_effect = agent.urllib.error.HTTPError('http://127.0.0.1/health', 503, 'Unavailable', {}, None)
+            self.assertFalse(agent.http_items()[0]['up'])
