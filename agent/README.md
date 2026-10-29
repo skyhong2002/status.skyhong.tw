@@ -48,10 +48,10 @@ The `chumei-pipeline` monitor now requires this successful completion evidence t
 be no older than **four hours**, allowing an hour beyond its normal interval.
 Missing, malformed, timezone-free, or over 60 seconds future-dated evidence fails the check. A
 new file modification time cannot make an old completion fresh. Starting a new
-run does not hide stale output, and fresh output cannot hide a launchd failure.
+run does not hide stale output, and fresh output cannot hide a systemd failure.
 The agent reads the artifact without changing it.
 
-Other scheduled jobs keep their existing launchd exit-status checks without a
+Other scheduled jobs keep their systemd result checks without a
 freshness policy. Harmonica's full and fast pipelines share a runtime file, and
 runtime heartbeats can be overwritten by a running job. Those records are not
 treated as proof that each scheduled job last succeeded. This change does not
@@ -184,3 +184,35 @@ holds `AGENT_INGEST_TOKEN`. The items are:
 If the NAS, the volume, or the cron job goes away, the dashboard marks every item
 down after three missed intervals. A QTS firmware update can rewrite
 `/etc/config/crontab`, so re-check the entry after upgrading.
+
+## sky-server agent
+
+Chumei, Harmonica and Mayor2026 moved from sky-mini to sky-server, so their
+monitors moved with them. `agent/skyserver_agent.py` reports to
+`/api/agents/sky-server` with the same `{ host, items }` payload and the shared
+`AGENT_INGEST_TOKEN`; the dashboard needs no change. Item IDs are unchanged
+(`chumei-auth`, `chumei-pipeline`, …) but now carry the `sky-server:` prefix, so
+uptime history starts fresh. The retired `chumei-promo-files` server is no
+longer monitored.
+
+- Docker containers (`chumei-auth`, `chumei-bot-line`, `chumei-bot-telegram`,
+  `chumei-mcp`, `chumei-push`): up only while running, and healthy when the
+  container defines a healthcheck.
+- systemd timers (Chumei pipeline/push-drip/submissions/telegram, Harmonica
+  pipeline/social-fast/submission-intake/calendar-maintenance, Mayor2026
+  pipeline): the timer must be loaded and active and the oneshot service's last
+  result `success`. A job that has never run is up. A failed job stays down
+  while a retry runs (the last finished result is kept in
+  `/var/lib/sky-status-agent/systemd-jobs.json`).
+- `chumei-pipeline` keeps the four-hour publish-freshness policy above, now
+  reading `/srv/chumei/state/pipeline.json`.
+
+It runs as a hardened root oneshot (Docker socket and the 0600 Chumei state
+need it) from `sky-status-agent.timer` every minute:
+
+```sh
+sudo install -D -m 0644 agent/skyserver_agent.py /opt/sky-status-agent/skyserver_agent.py
+sudo install -m 0644 agent/systemd/sky-status-agent.{service,timer} /etc/systemd/system/
+# /etc/sky-status-agent.env (root, 0600): STATUS_ENDPOINT=…, AGENT_INGEST_TOKEN=…
+sudo systemctl daemon-reload && sudo systemctl enable --now sky-status-agent.timer
+```

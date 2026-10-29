@@ -304,8 +304,7 @@ class DiagnosticOrchestrationTest(unittest.TestCase):
         watcher = {"id": "bamboo-discord", "up": True}
         with patch("skylabmac_agent.diagnostic_items", return_value=diagnostics), \
              patch("skylabmac_agent.bamboo_discord_status", return_value=watcher), \
-             patch("skylabmac_agent.http_probe", return_value=(True, "Ready · HTTP 200")), \
-             patch("skylabmac_agent.scheduled_job_status", return_value=(True, "Scheduled")):
+             patch("skylabmac_agent.http_probe", return_value=(True, "Ready · HTTP 200")):
             items, heartbeat = collect_service_items("", "", {}, {})
         self.assertEqual([item["id"] for item in items[:len(WATCHES)]], [watch[1] for watch in WATCHES])
         self.assertIs(heartbeat, watcher)

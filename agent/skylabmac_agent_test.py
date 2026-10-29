@@ -24,14 +24,12 @@ from gateway_telemetry import (
 )
 from skylabmac_agent import (
     bamboo_discord_status,
-    chumei_pipeline_freshness,
     http_probe,
     http_status_policy,
     launchd_status,
     load_launchd_job_state,
     collect_service_items,
     save_launchd_job_state,
-    scheduled_job_status,
 )
 
 
@@ -185,77 +183,21 @@ class HttpStatusPolicyTest(unittest.TestCase):
                 http_status_policy({"http_accepted_statuses": policies})
 
 
-class ChumeiPipelineFreshnessTest(unittest.TestCase):
-    def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        self.path = Path(self.directory.name) / "pipeline.json"
-        self.now = datetime(2026, 10, 18, 0, 0, tzinfo=timezone.utc)
-
-    def write(self, age_minutes=10, results=None, completed=None):
-        self.path.write_text(json.dumps({
-            "last_run": completed or (self.now - timedelta(minutes=age_minutes)).isoformat(),
-            "last_results": results if results is not None else {"extract": True, "build": True},
-        }), encoding="utf-8")
-
-    def check(self):
-        return chumei_pipeline_freshness(self.path, now=self.now)
-
-    def test_successful_publish_is_fresh_until_deadline(self):
-        self.write(age_minutes=240)
-        self.assertTrue(self.check()[0])
-
-    def test_stale_success_is_down_even_when_file_was_just_written(self):
-        self.write(age_minutes=241)
-        up, detail = self.check()
-        self.assertFalse(up)
-        self.assertIn("Pipeline stale", detail)
-
-    def test_failed_publish_is_not_a_success_heartbeat(self):
-        for results in ({"build": False}, {"build": True, "telegram": False}, {}):
-            with self.subTest(results=results):
-                self.write(results=results)
-                self.assertFalse(self.check()[0])
-
-    def test_optional_fetch_failure_does_not_override_producer_success(self):
-        self.write(results={"facebook": False, "extract": True, "build": True})
-        self.assertTrue(self.check()[0])
-
-    def test_missing_or_malformed_evidence_is_not_healthy(self):
-        self.assertFalse(self.check()[0])
-        for content in ("{", "null", "[]", '{"last_results": true}',
-                        '{"last_results": {"build": true}, "last_run": 42}'):
-            with self.subTest(content=content):
-                self.path.write_text(content, encoding="utf-8")
-                self.assertFalse(self.check()[0])
-
-    def test_timezone_required_and_future_timestamp_rejected(self):
-        self.write(completed="2026-10-18T00:00:00")
-        self.assertFalse(self.check()[0])
-        self.write(age_minutes=-5)
-        self.assertFalse(self.check()[0])
-
-    def test_utc_z_and_small_clock_skew_are_supported(self):
-        self.write(completed="2026-10-18T00:00:30Z")
-        self.assertTrue(self.check()[0])
-
-
 class AgentReportCompatibilityTest(unittest.TestCase):
     def test_endpoint_policy_and_item_wire_shape(self):
         # Call orchestration only: no main/config, telemetry, reporting or heartbeat.
         watches = [
             ("http", "localplaud-api", "LocalPlaud API", "http://local.invalid/healthz"),
             ("http", "bamboo-rsshub", "Bamboo RSSHub", "http://rss.invalid/healthz"),
-            ("launchd-job", "chumei-pipeline", "Chumei pipeline", "chumei.job"),
+            ("launchd-job", "example-job", "Example job", "example.job"),
         ]
         diagnostics = [{"id": "fixture-diagnostic", "name": "Diagnostic", "kind": "Local",
                         "up": False, "detail": "Unknown"}]
         with patch("skylabmac_agent.WATCHES", watches), \
              patch("skylabmac_agent.diagnostic_items", return_value=diagnostics) as local, \
-             patch("skylabmac_agent.chumei_pipeline_freshness", return_value=(False, "Pipeline stale")), \
              patch("skylabmac_agent.http_probe", return_value=(True, "Ready · HTTP 200")) as probe:
             items, heartbeat_status = collect_service_items(
-                "", "-\t0\tchumei.job\n", {}, {"localplaud-api": [200, 401]},
+                "", "-\t1\texample.job\n", {}, {"localplaud-api": [200, 401]},
             )
         self.assertIsNone(heartbeat_status)
         local.assert_called_once_with()
@@ -265,32 +207,11 @@ class AgentReportCompatibilityTest(unittest.TestCase):
             self.assertEqual(set(item), {"id", "name", "kind", "up", "detail"})
         self.assertTrue(items[1]["up"])
         self.assertFalse(items[2]["up"])
-        self.assertEqual(items[2]["id"], "chumei-pipeline")
+        self.assertEqual(items[2]["id"], "example-job")
         self.assertEqual(items[-1], diagnostics[0])
 
 
 class LaunchdStatusTest(unittest.TestCase):
-    def test_idle_success_requires_fresh_chumei_publish(self):
-        with patch("skylabmac_agent.chumei_pipeline_freshness", return_value=(False, "Pipeline stale")):
-            up, detail = scheduled_job_status("chumei-pipeline", "job", {"job": (None, 0)})
-        self.assertFalse(up)
-        self.assertIn("Pipeline stale", detail)
-
-    def test_running_job_does_not_hide_stale_publish(self):
-        with patch("skylabmac_agent.chumei_pipeline_freshness", return_value=(False, "Pipeline stale")):
-            self.assertFalse(scheduled_job_status("chumei-pipeline", "job", {"job": (123, 0)})[0])
-
-    def test_fresh_artifact_cannot_hide_launchd_failure(self):
-        with patch("skylabmac_agent.chumei_pipeline_freshness") as freshness:
-            self.assertFalse(scheduled_job_status("chumei-pipeline", "job", {"job": (None, 1)})[0])
-            freshness.assert_not_called()
-
-    def test_unattributable_jobs_keep_existing_status_semantics(self):
-        with patch("skylabmac_agent.chumei_pipeline_freshness") as freshness:
-            self.assertEqual(scheduled_job_status("harmonica-social-fast", "job", {"job": (None, 0)}),
-                             (True, "Scheduled · last run ok"))
-            freshness.assert_not_called()
-
     def test_failed_scheduled_job_stays_down_while_retry_runs(self):
         up, detail = launchd_status(
             "example.job",

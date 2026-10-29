@@ -32,9 +32,6 @@ BAMBOO_CRON_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/cron/jobs.json")
 BAMBOO_WATCHER_STATE_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/state/discord-watcher/state.json")
 WATCHER_MAX_AGE_SECONDS = 20 * 60
 API_PROBE_TIMEOUT_SECONDS = 5
-CHUMEI_PIPELINE_STATE_PATH = Path("/Users/skyhong/Projects/chumei/state/pipeline.json")
-# The pipeline runs every three hours; allow an hour for a delayed/long run.
-CHUMEI_PIPELINE_MAX_AGE_SECONDS = 4 * 60 * 60
 WATCHES = [
     ("process", "caddy", "Caddy", "/usr/local/sbin/caddy run"),
     # The API is served by `localplaud run` (combined poll+serve) on this host, so a
@@ -52,23 +49,6 @@ WATCHES = [
     ("launchd", "website-agent", "Harmonica website agent", "club.nycu.harmonica.website-agent"),
     ("launchd", "website-hermes", "Harmonica website gateway", "club.nycu.harmonica.website-hermes"),
     ("launchd", "hermes-dashboard", "Hermes dashboard UI", "local.hermes.dashboard-ui"),
-    ("launchd", "chumei-auth", "Chumei auth server", "tw.observe.chumei.auth"),
-    # Promo file server is submitted ad-hoc via `launchctl submit` (no plist), so going
-    # down after a reboot is exactly what this watch should surface.
-    ("launchd", "chumei-promo-files", "Chumei promo file server", "com.chumei.promo-files"),
-    ("launchd", "chumei-bot-line", "Chumei LINE bot", "tw.observe.chumei.bot-line"),
-    ("launchd", "chumei-bot-telegram", "Chumei Telegram bot", "tw.observe.chumei.bot-telegram"),
-    ("launchd", "chumei-mcp", "Chumei MCP server", "tw.observe.chumei.mcp"),
-    ("launchd", "chumei-push", "Chumei push server", "tw.observe.chumei.push"),
-    ("launchd-job", "chumei-pipeline", "Chumei pipeline", "tw.observe.chumei.pipeline"),
-    ("launchd-job", "chumei-push-drip", "Chumei push drip", "tw.observe.chumei.push-drip"),
-    ("launchd-job", "chumei-submissions", "Chumei submissions sync", "tw.observe.chumei.submissions"),
-    ("launchd-job", "chumei-telegram-publish", "Chumei Telegram publisher", "tw.observe.chumei.telegram"),
-    ("launchd-job", "harmonica-pipeline", "Harmonica pipeline", "tw.observe.harmonica.pipeline"),
-    ("launchd-job", "harmonica-social-fast", "Harmonica social-fast", "tw.observe.harmonica.social-fast"),
-    ("launchd-job", "harmonica-submission-intake", "Harmonica submission intake", "tw.observe.harmonica.submission-intake"),
-    ("launchd-job", "harmonica-calendar", "Harmonica calendar sync", "tw.observe.harmonica.calendar-maintenance"),
-    ("launchd-job", "mayor2026-pipeline", "Mayor2026 pipeline", "tw.observe.mayor2026.pipeline"),
 ]
 
 
@@ -151,46 +131,6 @@ def http_status_policy(config):
         ):
             raise ValueError("HTTP accepted statuses must be a nonempty list of 200–499 codes")
     return policies
-
-
-def chumei_pipeline_freshness(path=CHUMEI_PIPELINE_STATE_PATH,
-                             max_age_seconds=CHUMEI_PIPELINE_MAX_AGE_SECONDS, now=None):
-    """Read the pipeline's completed publish result, never log/file mtime.
-
-    Chumei writes last_run and last_results after its steps complete. Partial
-    fetch failures are intentionally tolerated by the producer; build (and the
-    legacy telegram step, when present) determine its successful exit status.
-    """
-    now = now or datetime.now(timezone.utc)
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        results = data["last_results"]
-        if not isinstance(results, dict):
-            raise ValueError("missing results")
-        if results.get("build") is not True or results.get("telegram", True) is not True:
-            return False, "Last completed pipeline did not publish successfully"
-        completed = datetime.fromisoformat(data["last_run"].replace("Z", "+00:00"))
-        if completed.tzinfo is None:
-            raise ValueError("missing timezone")
-        age = (now - completed).total_seconds()
-        if age < -60:
-            return False, "Pipeline completion time is in the future"
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
-        return False, "Pipeline completion evidence missing or invalid"
-    minutes = int(max(0, age) // 60)
-    if age > max_age_seconds:
-        return False, f"Pipeline stale · last successful publish {minutes}m ago"
-    return True, f"Last successful publish {minutes}m ago"
-
-
-def scheduled_job_status(identifier, label, jobs, *, previous_status=None):
-    up, detail = launchd_status(label, jobs, scheduled=True, previous_status=previous_status)
-    if up and identifier == "chumei-pipeline":
-        # No attributable, durable last-success artifact is configured for other jobs.
-        # In particular Harmonica's full and fast jobs share one runtime file.
-        fresh, evidence = chumei_pipeline_freshness()
-        return fresh, f"{detail} · {evidence}"
-    return up, detail
 
 
 def parse_launchctl(listing):
@@ -306,12 +246,7 @@ def collect_service_items(processes, launchd, launchd_job_state, status_policy):
             previous_status = launchd_job_state.get(pattern)
             if scheduled and pid is None and status is not None:
                 launchd_job_state[pattern] = status
-            if scheduled:
-                up, detail = scheduled_job_status(
-                    identifier, pattern, launchd_jobs, previous_status=previous_status,
-                )
-            else:
-                up, detail = launchd_status(pattern, launchd_jobs)
+            up, detail = launchd_status(pattern, launchd_jobs, scheduled=scheduled, previous_status=previous_status)
             kind = "Scheduled job" if scheduled else "LaunchAgent"
             items.append({"id": identifier, "name": name, "kind": kind, "up": up, "detail": detail})
             continue
