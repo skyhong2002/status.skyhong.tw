@@ -83,6 +83,9 @@ fi
 gateway_field=""
 [ -n "$gateway" ] && gateway_field=",\"gateway\":$gateway"
 
+# Cloudflare Browser Integrity Check blocks some default client User-Agents (error 1010).
+USER_AGENT="sky-status-agent/1.0 (+$(hostname))"
+
 payload=$(cat <<JSON
 {"host":"$(hostname)","items":[
  {"id":"disk-root","name":"Disk /","kind":"Host metric","up":$disk_up,"detail":"${disk_pct}% used · ${disk_used}/${disk_total}${reboot_info}"},
@@ -92,12 +95,12 @@ payload=$(cat <<JSON
 JSON
 )
 
-curl -fsS -X POST "${ENDPOINT%/}/api/agents/vps" \
+curl -fsS -A "$USER_AGENT" -X POST "${ENDPOINT%/}/api/agents/vps" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
   -d "$payload" > /dev/null
 
 if [ -n "${HEARTBEAT_TOKEN:-}" ]; then
-  curl -fsS -X POST "${ENDPOINT%/}/api/heartbeat/vps-host-reporter" \
+  curl -fsS -A "$USER_AGENT" -X POST "${ENDPOINT%/}/api/heartbeat/vps-host-reporter" \
     -H "Authorization: Bearer $HEARTBEAT_TOKEN" > /dev/null
 fi

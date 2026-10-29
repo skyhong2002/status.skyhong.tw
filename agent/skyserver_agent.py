@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 AGENT_ID = "sky-server"
+# Cloudflare Browser Integrity Check rejects urllib's default User-Agent (error 1010).
+USER_AGENT = f"sky-status-agent/1.0 (+{socket.gethostname()})"
 JOB_STATE_PATH = Path(os.environ.get("STATE_DIRECTORY", str(Path.home() / ".local/state/sky-status-agent"))) / "systemd-jobs.json"
 COMMAND_TIMEOUT_SECONDS = 20
 CHUMEI_PIPELINE_STATE_PATH = Path("/srv/chumei/state/pipeline.json")
@@ -320,7 +322,7 @@ def main():
     request = urllib.request.Request(
         f"{endpoint.rstrip('/')}/api/agents/{AGENT_ID}",
         data=body,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "User-Agent": USER_AGENT},
         method="POST",
     )
     try:

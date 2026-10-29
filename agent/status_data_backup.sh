@@ -53,7 +53,7 @@ chmod 600 "$archive"
 find "$BACKUP_ROOT" -type f -name 'status-*.tar.gz' -mtime "+$RETENTION_DAYS" -delete
 
 if [ "${STATUS_BACKUP_SKIP_HEARTBEAT:-0}" != "1" ]; then
-  curl -fsS -X POST "${ENDPOINT%/}/api/heartbeat/status-data-backup" \
+  curl -fsS -A "sky-status-agent/1.0 (+$(hostname))" -X POST "${ENDPOINT%/}/api/heartbeat/status-data-backup" \
     -H "Authorization: Bearer $HEARTBEAT_TOKEN" >/dev/null
 fi
 

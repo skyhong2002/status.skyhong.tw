@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Probe OmniObserve from SkyLabMac and report through the existing agent channel."""
-import concurrent.futures,json,subprocess,urllib.request
+import concurrent.futures,json,socket,subprocess,urllib.request
 from pathlib import Path
 
 def probe(target):
@@ -13,7 +13,7 @@ def main():
     config=json.loads((Path.home()/'.config/sky-status-agent.json').read_text())
     targets=json.loads(Path(__file__).with_name('omni-targets.json').read_text())
     with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:items=list(pool.map(probe,targets))
-    req=urllib.request.Request(config['endpoint'].rstrip('/')+'/api/agents/omni-probe',data=json.dumps({'host':'SkyLabMac','items':items}).encode(),headers={'Authorization':'Bearer '+config['token'],'Content-Type':'application/json'})
+    req=urllib.request.Request(config['endpoint'].rstrip('/')+'/api/agents/omni-probe',data=json.dumps({'host':'SkyLabMac','items':items}).encode(),headers={'Authorization':'Bearer '+config['token'],'Content-Type':'application/json','User-Agent':f'sky-status-agent/1.0 (+{socket.gethostname()})'})
     with urllib.request.urlopen(req,timeout=15) as response:assert response.status==200
     print(f'OmniObserve probes: {sum(x["up"] for x in items)}/{len(items)} up')
 if __name__=='__main__':main()

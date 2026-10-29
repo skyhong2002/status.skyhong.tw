@@ -27,6 +27,8 @@ class NoReadinessRedirects(urllib.request.HTTPRedirectHandler):
 READINESS_HTTP_OPENER = urllib.request.build_opener(NoReadinessRedirects())
 
 CONFIG_PATH = os.path.expanduser("~/.config/sky-status-agent.json")
+# Cloudflare Browser Integrity Check rejects urllib's default User-Agent (error 1010).
+USER_AGENT = f"sky-status-agent/1.0 (+{socket.gethostname()})"
 LAUNCHD_JOB_STATE_PATH = Path(os.path.expanduser("~/.config/sky-status-launchd-jobs.json"))
 BAMBOO_CRON_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/cron/jobs.json")
 BAMBOO_WATCHER_STATE_PATH = Path("/Users/skyhong/.hermes/profiles/bamboo/state/discord-watcher/state.json")
@@ -284,7 +286,7 @@ def main():
     request = urllib.request.Request(
         f"{config['endpoint'].rstrip('/')}/api/agents/skylabmac",
         data=body,
-        headers={"Authorization": f"Bearer {config['token']}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {config['token']}", "Content-Type": "application/json", "User-Agent": USER_AGENT},
         method="POST",
     )
     try:
@@ -298,7 +300,7 @@ def main():
     if bamboo_status and bamboo_status["up"] and config.get("heartbeat_token"):
         heartbeat = urllib.request.Request(
             f"{config['endpoint'].rstrip('/')}/api/heartbeat/bamboo-discord-watcher",
-            headers={"Authorization": f"Bearer {config['heartbeat_token']}"},
+            headers={"Authorization": f"Bearer {config['heartbeat_token']}", "User-Agent": USER_AGENT},
             method="POST",
         )
         try:
