@@ -158,3 +158,29 @@ command and confirm both new IDs reach the dashboard through normal reporting.
 Rollback removes the two diagnostic items/integration by reverting this commit;
 there is no diagnostic persistent state or job mutation to undo. Existing
 dashboard incident/history retention still follows its normal policy.
+
+## ggss-nas reporter
+
+`agent/ggss_nas_reporter.sh` reports the QNAP NAS (`ggss-nas`) as the remote agent
+`ggss-nas`. It needs only BusyBox and curl from QTS and runs once a minute as root
+from `/etc/config/crontab`:
+
+```
+* * * * * /bin/sh /share/CACHEDEV1_DATA/.sky-status/ggss_nas_reporter.sh >/dev/null 2>&1
+```
+
+Its private config is `/share/CACHEDEV1_DATA/.sky-status/env` (mode 600), which
+holds `AGENT_INGEST_TOKEN`. The items are:
+
+- `pihole-dns`: Pi-hole at 192.168.50.2 resolves a real name. LAN clients use it as DNS.
+- `pihole-container`: the container is running and Docker reports it `healthy`.
+- `docker`: Container Station's dockerd answers.
+- `pool-usage`: thin pool `vg1/tp1` data usage, warning at 90%. Snapshots share
+  this pool. At about 99%, QTS switches the volume to privileged mode (unlink and
+  discard only) while `df` still shows free space. This happened on 2026-11-04,
+  and dockerd, and with it Pi-hole, could not start.
+- `volume-writable`: writes and removes a probe file on the data volume.
+
+If the NAS, the volume, or the cron job goes away, the dashboard marks every item
+down after three missed intervals. A QTS firmware update can rewrite
+`/etc/config/crontab`, so re-check the entry after upgrading.
