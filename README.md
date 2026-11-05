@@ -85,6 +85,8 @@ Set `MAINTENANCE_JSON` to an array of `{ start, end, reason }` ISO windows to pa
 
 Only the dashboard itself, `PUBLIC_ORIGIN/`, is meant for search (`seo.mjs`). It carries `<link rel="canonical">` to that URL, and `GET /sitemap.xml` lists only it; `GET /robots.txt` allows crawling and names the sitemap. Every other response — `/api/*`, metrics, health, feed, badge, assets, token endpoints, 404s — is served with `X-Robots-Tag: noindex`. They are deliberately not disallowed in robots.txt: the page renders from `/api/status`, and the footer links `/metrics`, `/feed.xml`, and `/badge.svg`, so crawlers must be able to fetch them to see the noindex. Adding a page to the sitemap means adding it to `INDEXABLE_PATHS`; never add API, metrics, or private host data. The rollout record, including the n8n noindex change, is in `docs/gsc-20261023.md`.
 
+Standalone containers (outside Swarm) are down when they are not running, unhealthy, restarting or OOM-killed. A container that exited with code 0 is shown as *Stopped* and never alerts when it has no restart policy or its whole Compose project is stopped, so a deliberately shut-down stack left on the host does not read as an outage (`docker.mjs`). A clean exit while the rest of its project still runs stays down.
+
 ## Deployment
 
 The Compose stack joins `dokploy-network` and uses Dokploy's existing Traefik middleware and Let's Encrypt resolver. It runs in `/home/ubuntu/apps/sky-status-dashboard` on the host.

@@ -209,7 +209,7 @@ function setCount(id, up, total) {
 
 function renderInfrastructure(data, remote) {
   const services = [...data.services].sort((a, b) => Number(a.up) - Number(b.up) || a.name.localeCompare(b.name));
-  renderList('docker-list', services.map((item) => row(item.name, item.detail, item.up, item.up ? 'Running' : 'Down', { tag: item.kind === 'Swarm service' ? 'swarm' : 'container' })), 'No Docker data.');
+  renderList('docker-list', services.map((item) => row(item.name, item.detail, item.stopped ? null : item.up, item.stopped ? 'Stopped' : item.up ? 'Running' : 'Down', { tag: item.kind === 'Swarm service' ? 'swarm' : 'container' })), 'No Docker data.');
   const hosts = [...new Set(remote.map((item) => item.host))];
   const rows = hosts.flatMap((host) => {
     const items = remote.filter((item) => item.host === host).sort((a, b) => Number(a.up) - Number(b.up));

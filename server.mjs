@@ -13,6 +13,7 @@ import { renderMetrics, renderBadge, renderFeed, countIncidents, PROBE_AGENT_IDS
 import { buildGatewaySnapshot, migrateGatewayReports, parseGatewayHosts, probeGateway, sanitizeGatewayReport } from './gateway.mjs';
 import { pruneHistory, recordHistory as appendHistory, summarizeHistory } from './history.mjs';
 import { renderRobots, renderSitemap, robotsTag } from './seo.mjs';
+import { containerStatus, runningProjects } from './docker.mjs';
 
 const port = Number(process.env.PORT || 3000);
 const dataDir = process.env.DATA_DIR || './data';
@@ -191,26 +192,13 @@ async function getDockerServices() {
       detail: `${running}/${desired} running${failed ? `, ${failed} failed` : ''}`,
     };
   });
+  const liveProjects = runningProjects(containers);
   const standalone = await Promise.all((containers || [])
     .filter((container) => !container.Labels?.['com.docker.swarm.service.name'])
     .map(async (container) => {
-      const name = container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12);
-      let restarts = 0;
-      let oomKilled = false;
-      let restarting = container.State === 'restarting';
-      try {
-        const inspect = await dockerRequest(`/containers/${container.Id}/json`);
-        restarts = inspect?.RestartCount ?? 0;
-        oomKilled = Boolean(inspect?.State?.OOMKilled);
-        restarting = Boolean(inspect?.State?.Restarting) || restarting;
-      } catch {}
-      const unhealthy = Boolean(container.Status?.includes('(unhealthy)'));
-      const up = container.State === 'running' && !unhealthy && !restarting && !oomKilled;
-      let detail = container.Status || container.State;
-      if (oomKilled) detail = `OOMKilled · ${detail}`;
-      else if (restarting) detail = `Restarting · ${detail}`;
-      if (restarts > 0) detail += ` · ${restarts} restarts`;
-      return { id: container.Id, name, kind: 'Container', up, detail };
+      let inspect = null;
+      try { inspect = await dockerRequest(`/containers/${container.Id}/json`); } catch {}
+      return containerStatus(container, inspect, liveProjects);
     }));
   return [...swarm, ...standalone].sort((a, b) => a.name.localeCompare(b.name));
 }

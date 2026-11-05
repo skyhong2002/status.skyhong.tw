@@ -14,6 +14,7 @@ COPY history.mjs ./
 COPY observability.mjs ./
 COPY gateway.mjs ./
 COPY seo.mjs ./
+COPY docker.mjs ./
 COPY agent ./agent
 COPY public ./public
 
