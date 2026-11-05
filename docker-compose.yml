@@ -30,7 +30,6 @@ services:
         GIT_SHA: "${GIT_SHA:-unknown}"
     image: status-skyhong-tw:latest
     user: "1000:1000"
-    group_add: ["986"]
     restart: unless-stopped
     logging:
       driver: json-file
@@ -73,7 +72,6 @@ services:
       CERT_CHECK_INTERVAL_HOURS: ${CERT_CHECK_INTERVAL_HOURS:-6}
     volumes:
       - status-data:/data
-      - /var/lib/omni-monitor-tunnel/socket:/run/omni-origin:ro
     networks:
       - internal
       - dokploy-network

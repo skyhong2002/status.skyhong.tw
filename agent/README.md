@@ -54,8 +54,7 @@ The agent reads the artifact without changing it.
 Other scheduled jobs keep their systemd result checks without a
 freshness policy. Harmonica's full and fast pipelines share a runtime file, and
 runtime heartbeats can be overwritten by a running job. Those records are not
-treated as proof that each scheduled job last succeeded. This change does not
-add or alter OmniObserve monitors.
+treated as proof that each scheduled job last succeeded.
 
 ## Offline validation
 

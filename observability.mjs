@@ -8,9 +8,6 @@ function xmlEscape(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
 }
 
-// Agents that only feed remote target probes; their items are reported through those targets, not as host checks.
-export const PROBE_AGENT_IDS = new Set(['omni-probe']);
-
 export function countIncidents(state, thresholds = {}) {
   const certWarn = thresholds.certWarnDays ?? 21;
   const domainWarn = thresholds.domainWarnDays ?? 30;
@@ -19,8 +16,7 @@ export function countIncidents(state, thresholds = {}) {
   for (const target of state.targets || []) if (!target.up || target.degraded) count += 1;
   for (const service of state.services || []) if (!service.up) count += 1;
   for (const heartbeat of state.heartbeats || []) if (!heartbeat.up) count += 1;
-  for (const [agentId, agent] of Object.entries(state.agents || {})) {
-    if (PROBE_AGENT_IDS.has(agentId)) continue;
+  for (const agent of Object.values(state.agents || {})) {
     const stale = !agent.receivedAt || now - new Date(agent.receivedAt).getTime() > 180_000;
     for (const item of agent.items || []) if (stale || !item.up) count += 1;
   }

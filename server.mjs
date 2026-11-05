@@ -1,5 +1,3 @@
-import { fetchThroughSocket, describeTunnelError, tunnelTransportDetail } from './tunnel-probe.mjs';
-import { remoteProbe } from './remote-probe.mjs';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
@@ -9,7 +7,7 @@ import { createHeartbeats } from './heartbeats.mjs';
 import { buildHealthSnapshot, buildReadinessSnapshot } from './health.mjs';
 import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from './probes.mjs';
 import { createUptimeStore } from './uptime.mjs';
-import { renderMetrics, renderBadge, renderFeed, countIncidents, PROBE_AGENT_IDS } from './observability.mjs';
+import { renderMetrics, renderBadge, renderFeed, countIncidents } from './observability.mjs';
 import { buildGatewaySnapshot, migrateGatewayReports, parseGatewayHosts, probeGateway, sanitizeGatewayReport } from './gateway.mjs';
 import { pruneHistory, recordHistory as appendHistory, summarizeHistory } from './history.mjs';
 import { renderRobots, renderSitemap, robotsTag } from './seo.mjs';
@@ -22,6 +20,8 @@ const agentsFile = join(dataDir, 'agents.json');
 const gatewayFile = join(dataDir, 'gateway.json');
 const intervalMs = Math.max(15, Number(process.env.CHECK_INTERVAL_SECONDS || 60)) * 1000;
 const dockerApiUrl = process.env.DOCKER_API_URL || '';
+// Where the HTTP target probes run from; reported with each result.
+const probeSource = process.env.PROBE_SOURCE || 'sky-server';
 const certWarnDays = Number(process.env.CERT_WARN_DAYS || 21);
 const domainWarnDays = Number(process.env.DOMAIN_WARN_DAYS || 30);
 const certIntervalMs = Math.max(1, Number(process.env.CERT_CHECK_INTERVAL_HOURS || 6)) * 3600 * 1000;
@@ -109,13 +109,12 @@ function elapsed(ms) {
 }
 
 async function checkTarget(target) {
-  if (target.probeAgent) return remoteProbe(target, state.agents);
   const startedAt = Date.now();
   const checkUrl = target.checkUrl || target.url;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), target.timeoutMs || 12_000);
   try {
-    const response = target.probeSocket ? await fetchThroughSocket(checkUrl, target.probeSocket, controller.signal) : await fetch(checkUrl, { method: 'GET', redirect: 'follow', signal: controller.signal });
+    const response = await fetch(checkUrl, { method: 'GET', redirect: 'follow', signal: controller.signal });
     const accepted = target.acceptedStatuses || [];
     let up = accepted.length ? accepted.includes(response.status) : response.status >= 200 && response.status < 400;
     let detail = response.statusText || 'Reachable';
@@ -134,17 +133,14 @@ async function checkTarget(target) {
       degraded = true;
       degradedReason = `Slow: ${latencyMs}ms > ${target.latencyThresholdMs}ms`;
     }
-    return { ...target, probeSource: target.probeSocket ? 'skyhong.tw via private SSH' : 'skyhong.tw', up, statusCode: response.status, latencyMs, detail, degraded, degradedReason };
+    return { ...target, probeSource, up, statusCode: response.status, latencyMs, detail, degraded, degradedReason };
   } catch (error) {
-    let detail = target.probeSocket ? describeTunnelError(error) : error.name === 'AbortError' ? 'Timed out' : 'Unreachable';
-    // A Unix-socket request does not resolve the origin hostname: keep its actual error.
-    if (!target.probeSocket) {
-      try {
-        const dnsResult = await resolveHost(new URL(checkUrl).hostname);
-        if (!dnsResult.ok) detail = 'DNS resolution failed';
-      } catch {}
-    }
-    return { ...target, probeSource: target.probeSocket ? 'skyhong.tw via private SSH' : 'skyhong.tw', up: false, statusCode: null, latencyMs: Date.now() - startedAt, detail, degraded: false, degradedReason: null };
+    let detail = error.name === 'AbortError' ? 'Timed out' : 'Unreachable';
+    try {
+      const dnsResult = await resolveHost(new URL(checkUrl).hostname);
+      if (!dnsResult.ok) detail = 'DNS resolution failed';
+    } catch {}
+    return { ...target, probeSource, up: false, statusCode: null, latencyMs: Date.now() - startedAt, detail, degraded: false, degradedReason: null };
   } finally {
     clearTimeout(timer);
   }
@@ -237,8 +233,6 @@ async function refresh() {
   try { services = await getDockerServices(); } catch (error) { errors.push('Docker status temporarily unavailable'); }
   state.checkedAt = new Date().toISOString();
   state.targets = checkedTargets;
-  const omniMain = targets.find((target) => target.id === 'omni-main-web');
-  state.omniNetworkPath = omniMain ? await checkTarget({ ...omniMain, probeAgent: null, probeSocket: null }) : null;
   state.services = services;
   state.errors = errors;
   state.gateway = buildGatewaySnapshot({ hosts: gatewayHosts, probes: Object.fromEntries(gatewayProbes), probeConfigured: gatewayProbeConfigured, reports: gatewayReports });
@@ -251,7 +245,6 @@ async function refresh() {
   try { uptimeStore.record(historyItems); state.uptime = uptimeStore.summary(historyItems.map((item) => item.id)); } catch {}
   const alertItems = [
     ...checkedTargets.map((t) => ({ id: `target:${t.id}`, name: t.name, up: t.up, detail: t.statusCode ? `HTTP ${t.statusCode} · ${t.detail}` : t.detail })),
-    ...(state.omniNetworkPath ? [{id: 'omni-monitor-path', name: 'OmniObserve monitoring transport', up: checkedTargets.filter((t) => t.id.startsWith('omni-')).every((t) => t.up), detail: tunnelTransportDetail(checkedTargets)}] : []),
     ...services.map((s) => ({ id: `runtime:${s.name}`, name: s.name, up: s.up, detail: s.detail })),
     ...remoteItems().map((r) => ({ id: `remote:${r.id}`, name: r.name, up: r.up, detail: r.detail })),
     ...heartbeatItems.map((h) => ({ id: `heartbeat:${h.id}`, name: `${h.name} · heartbeat`, up: h.up, detail: h.detail })),
@@ -278,7 +271,7 @@ function agentAuthorized(request) {
 
 function remoteItems() {
   const now = Date.now();
-  return Object.entries(state.agents).filter(([id]) => !PROBE_AGENT_IDS.has(id)).flatMap(([agentId, agent]) => {
+  return Object.entries(state.agents).flatMap(([agentId, agent]) => {
     const stale = !agent.receivedAt || now - new Date(agent.receivedAt).getTime() > intervalMs * 3;
     return (agent.items || []).map((item) => ({
       ...item,

@@ -28,7 +28,7 @@ function freshness(receivedAt) {
 }
 
 function remoteItems(agents) {
-  return Object.entries(agents || {}).filter(([id]) => id !== 'omni-probe').flatMap(([id, agent]) => (agent.items || []).map((item) => ({
+  return Object.entries(agents || {}).flatMap(([id, agent]) => (agent.items || []).map((item) => ({
     ...item,
     id: `${id}:${item.id}`,
     host: agent.host || id,
@@ -117,7 +117,7 @@ function barsHtml(bars, now) {
 
 // ---------- products ----------
 function statusLabel(target) {
-  if (!target.up) return { cls: 'down', text: target.id.startsWith('omni-') && !target.statusCode ? 'Probe unreachable' : 'Unavailable' };
+  if (!target.up) return { cls: 'down', text: 'Unavailable' };
   if (target.degraded) return { cls: 'warn', text: 'Degraded' };
   return { cls: '', text: 'Operational' };
 }
@@ -150,8 +150,7 @@ function monitorRow(target, data, now, nested = false) {
 }
 
 function renderProducts(data, now) {
-  const isOmni = (target) => target.id.startsWith('omni-');
-  const targets = data.targets.filter((target) => !isOmni(target));
+  const targets = data.targets;
   const groups = [...new Set(targets.map((target) => target.group || 'Other'))];
   $('product-list').innerHTML = groups.map((group) => {
     const members = targets.filter((target) => (target.group || 'Other') === group);
@@ -159,32 +158,6 @@ function renderProducts(data, now) {
     const title = groups.length > 1 ? `<div class="group-title"><span>${esc(group)}</span><b>${healthy}/${members.length} operational</b></div>` : '';
     return title + members.map((target) => monitorRow(target, data, now)).join('');
   }).join('') || '<div class="empty">No public targets configured.</div>';
-
-  const omni = data.targets.filter(isOmni);
-  const unreachable = omni.filter((target) => !target.up && !target.statusCode).length;
-  const healthy = omni.filter((target) => target.up && !target.degraded).length;
-  const allHealthy = omni.length > 0 && healthy === omni.length;
-  const status = allHealthy ? 'Operational' : unreachable === omni.length ? 'Probe unreachable' : 'Needs attention';
-  const bars = omni.length ? historyFor(omni[0].id, data.history24h).bars.map((_, index) => {
-    const states = omni.map((target) => historyFor(target.id, data.history24h).bars[index]);
-    return states.includes('down') ? 'down' : states.includes('up') ? 'up' : 'empty';
-  }) : new Array(BINS).fill('empty');
-  const notices = [
-    unreachable ? '<p class="notice">監控主機無法連到部分端點；這不等於已確認服務本身故障。</p>' : '',
-    data.omniNetworkPath && !data.omniNetworkPath.up ? '<p class="notice">skyhong.tw → 國網的公開路徑仍無法連線；上述服務狀態由 skyhong.tw 經專用 SSH 通道直接檢查。</p>' : '',
-  ].join('');
-  $('omni-list').innerHTML = omni.length ? `<article class="monitor">
-      <div class="monitor-name"><a href="https://omni.observe.tw/" rel="noopener">OmniObserve</a><span>${healthy}/${omni.length} checks healthy across production, development and infrastructure</span></div>
-      ${barsHtml(bars, now)}
-      <div class="metric latency"><strong>${healthy}/${omni.length}</strong><span>endpoints</span></div>
-      <div class="metric uptime"><strong>${number(Math.round(omni.reduce((sum, target) => sum + (target.latencyMs || 0), 0) / omni.length))} ms</strong><span>avg response</span></div>
-      ${pill(allHealthy ? '' : 'down', status)}
-    </article>
-    <details id="omni-details" ${openDetails.has('omni-details') ? 'open' : ''}>
-      <summary class="details-toggle">Environment details · ${omni.length} endpoints</summary>
-      ${notices}
-      ${omni.map((target) => monitorRow(target, data, now, true)).join('')}
-    </details>` : '<div class="empty">No OmniObserve probes configured.</div>';
 }
 
 // ---------- generic rows ----------
@@ -341,10 +314,8 @@ const alertIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4m
 function renderAttention(data, remote) {
   const certWarn = data.thresholds?.certWarnDays ?? 21;
   const domainWarn = data.thresholds?.domainWarnDays ?? 30;
-  const omniFailed = data.targets.filter((item) => item.id.startsWith('omni-') && !item.up);
   const issues = [
-    ...data.targets.filter((item) => !item.up && !item.id.startsWith('omni-')).map((item) => ({ name: item.name, detail: item.statusCode ? `HTTP ${item.statusCode} · ${item.detail}` : item.detail, href: '#products' })),
-    ...(omniFailed.length ? [{ name: 'OmniObserve', detail: `${omniFailed.length} checks failed through the private SSH tunnel.${omniFailed.every((item) => !item.statusCode) ? ' No HTTP response received; service health is not confirmed.' : ''}`, href: '#omniobserve' }] : []),
+    ...data.targets.filter((item) => !item.up).map((item) => ({ name: item.name, detail: item.statusCode ? `HTTP ${item.statusCode} · ${item.detail}` : item.detail, href: '#products' })),
     ...data.targets.filter((item) => item.up && item.degraded).map((item) => ({ name: item.name, detail: item.degradedReason || 'Degraded', level: 'warn', href: '#products' })),
     ...data.services.filter((item) => !item.up).map((item) => ({ name: item.name, detail: item.detail, href: '#infrastructure' })),
     ...remoteIssues(remote),
