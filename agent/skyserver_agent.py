@@ -120,9 +120,21 @@ def extra_items(docker_output, system_output, user_output, job_state):
     for identifier, pattern in CONTAINER_PATTERNS:
         matches = [name for name in states if fnmatch.fnmatchcase(name, pattern)]
         results = [container_status(name, states) for name in matches]
-        items.append(dict(id=identifier, name=identifier, kind="Docker container",
-                          up=bool(matches) and all(up for up, _ in results),
-                          detail="; ".join(sorted(set(detail for _, detail in results))) if matches else "Container not found"))
+        running_results = [result for result in results if result[1].startswith('Running')]
+        # Swarm keeps failed historical tasks in `docker ps -a`; a healthy
+        # replacement is the service current state and must not be paged as
+        # an outage merely because an older task exited during host reboot.
+        if running_results:
+            details = sorted(set(detail for _, detail in running_results))
+            historical = len(results) - len(running_results)
+            if historical:
+                details.append(f'{historical} historical stopped task(s)')
+            up = all('Running but' not in detail for _, detail in running_results)
+            detail = '; '.join(details)
+        else:
+            up = False
+            detail = '; '.join(sorted(set(detail for _, detail in results))) if matches else 'Container not found'
+        items.append(dict(id=identifier, name=identifier, kind='Docker container', up=up, detail=detail))
     system = parse_systemctl_show(system_output)
     user = parse_systemctl_show(user_output)
     for unit in SYSTEM_SERVICES + USER_SERVICES:

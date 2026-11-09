@@ -223,7 +223,15 @@ class MigrationCoverageTest(unittest.TestCase):
         self.assertTrue(items['dokploy']['up'])
         docker += '\n' + docker_line('dokploy.1.failed-task', Status='exited', ExitCode=1)
         items = {item['id']: item for item in extra_items(docker, '', '', {})}
+        self.assertTrue(items['dokploy']['up'])
+        self.assertIn('historical stopped task', items['dokploy']['detail'])
+
+    def test_only_stopped_matches_remain_down(self):
+        from skyserver_agent import extra_items
+        docker = docker_line('dokploy.1.failed-task', Status='exited', ExitCode=1)
+        items = {item['id']: item for item in extra_items(docker, '', '', {})}
         self.assertFalse(items['dokploy']['up'])
+        self.assertIn('Container exited 1', items['dokploy']['detail'])
 
     def test_system_and_user_units_do_not_mix(self):
         from skyserver_agent import extra_items
