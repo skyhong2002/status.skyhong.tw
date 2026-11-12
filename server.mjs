@@ -10,7 +10,7 @@ import { createUptimeStore } from './uptime.mjs';
 import { renderMetrics, renderBadge, renderFeed, countIncidents } from './observability.mjs';
 import { buildGatewaySnapshot, migrateGatewayReports, parseGatewayHosts, probeGateway, sanitizeGatewayReport } from './gateway.mjs';
 import { pruneHistory, recordHistory as appendHistory, summarizeHistory } from './history.mjs';
-import { renderRobots, renderSitemap, robotsTag } from './seo.mjs';
+import { DEFAULT_LANG, localizeIndex, preferredLanguage, renderRobots, renderSitemap, robotsTag } from './seo.mjs';
 import { containerStatus, runningProjects } from './docker.mjs';
 
 const port = Number(process.env.PORT || 3000);
@@ -367,14 +367,24 @@ function clientIp(request) {
   return (request.headers['x-forwarded-for'] || '').split(',')[0].trim() || request.socket.remoteAddress || 'unknown';
 }
 
-function asset(response, entry) {
+function asset(response, entry, extraHeaders = {}) {
   response.writeHead(200, {
     ...securityHeaders(),
+    ...extraHeaders,
     'content-type': entry.contentType,
     'cache-control': entry.cacheControl,
     'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'self'; frame-ancestors 'none'",
   });
   response.end(entry.body);
+}
+
+// The index is Traditional Chinese by default; Accept-Language may select the English variant.
+const indexVariants = new Map();
+function serveIndex(request, response) {
+  const lang = preferredLanguage(request.headers['accept-language']);
+  const entry = publicAssets.get('/');
+  if (!indexVariants.has(lang)) indexVariants.set(lang, { ...entry, body: lang === DEFAULT_LANG ? entry.body : Buffer.from(localizeIndex(entry.body.toString('utf8'), lang)) });
+  return asset(response, indexVariants.get(lang), { vary: 'Accept-Language', 'content-language': lang });
 }
 
 function healthSnapshot(now = Date.now()) {
@@ -439,6 +449,7 @@ const server = createServer(async (request, response) => {
   if (url.pathname === '/robots.txt') return text(response, renderRobots(publicOrigin), 'text/plain; charset=utf-8', 'public, max-age=3600');
   if (url.pathname === '/sitemap.xml') return text(response, renderSitemap(publicOrigin), 'application/xml; charset=utf-8', 'public, max-age=3600');
   if (url.pathname === '/feed.xml') return text(response, renderFeed(alerter.recentIncidents(50), publicOrigin), 'application/rss+xml; charset=utf-8', 'public, max-age=60');
+  if (url.pathname === '/') return serveIndex(request, response);
   const publicAsset = publicAssets.get(url.pathname);
   if (publicAsset) return asset(response, publicAsset);
   return text(response, 'Not found', 'text/plain; charset=utf-8', 'no-store', 404);

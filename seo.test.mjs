@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderRobots, renderSitemap, robotsTag } from './seo.mjs';
+import { localizeIndex, preferredLanguage, renderRobots, renderSitemap, robotsTag } from './seo.mjs';
 
 const origin = 'https://status.skyhong.tw';
 
@@ -19,4 +19,21 @@ test('sitemap lists only the dashboard', () => {
   const sitemap = renderSitemap(origin);
   assert.match(sitemap, /^<\?xml version="1.0" encoding="UTF-8"\?>/);
   assert.deepEqual([...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]), ['https://status.skyhong.tw/']);
+});
+
+test('Accept-Language picks English only when it outranks Chinese', () => {
+  assert.equal(preferredLanguage(undefined), 'zh-Hant-TW');
+  assert.equal(preferredLanguage(''), 'zh-Hant-TW');
+  assert.equal(preferredLanguage('en-US,en;q=0.9'), 'en');
+  assert.equal(preferredLanguage('zh-TW,zh;q=0.9,en-US;q=0.8'), 'zh-Hant-TW');
+  assert.equal(preferredLanguage('en-US;q=0.5,zh-TW;q=0.9'), 'zh-Hant-TW');
+  assert.equal(preferredLanguage('fr-FR,en;q=0.7'), 'en');
+  assert.equal(preferredLanguage('ja-JP,fr;q=0.8'), 'zh-Hant-TW');
+  assert.equal(preferredLanguage('en;q=0,zh;q=0.1'), 'zh-Hant-TW');
+});
+
+test('localizeIndex rewrites only the root lang attribute', () => {
+  const html = '<!doctype html>\n<html lang="zh-Hant-TW">\n<body></body></html>';
+  assert.equal(localizeIndex(html, 'zh-Hant-TW'), html);
+  assert.match(localizeIndex(html, 'en'), /<html lang="en">/);
 });

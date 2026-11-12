@@ -6,6 +6,10 @@ It checks configured public endpoints, reads Docker task state through a narrowl
 
 The public interface uses a Kener-inspired status banner, monitor grouping, and segmented uptime history, with a compact infrastructure treatment informed by Gatus. It follows the system colour scheme and has a manual light/dark toggle. See `THIRD_PARTY_NOTICES.md` for attribution and license details.
 
+The interface is in Traditional Chinese by default and keeps English: `GET /` serves `<html lang="en">` when the request's `Accept-Language` ranks English above Chinese (`seo.mjs`, with `Vary: Accept-Language`), and the header's language button overrides that per browser. Service names and server-reported details (HTTP reasons, error text) are shown as reported. The page polls `/api/status` every minute only while the tab is visible and refreshes immediately when it returns to the foreground.
+
+To review the design locally without probing anything or sending alerts, run `node scripts/preview_server.mjs` and open `http://127.0.0.1:4317/?scenario=operational` (also `degraded`, `outage`, `incident`, `maintenance`, `nodata`, `offline`). It serves `public/` with a fabricated snapshot and never loads `server.mjs`. The 2026-11-13 design review and before/after comparisons are in `docs/design-review/`.
+
 ## API
 
 - `GET /api/status` — the dashboard snapshot. The 24-hour history is published as `history24h`: per monitor, a 48-character string (one 30-minute bin each; `0` no data, `1` all checks passed, `2` at least one failure) plus the 24-hour uptime percentage and check count. This keeps the payload around 70 KB.
