@@ -1,0 +1,12 @@
+[Unit]
+Description=Report the NAS backup share's free space to status.skyhong.tw
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/sky-status-agent.env
+Environment=NAS_FREE_MIN_GIB=150
+ExecStart=/usr/bin/python3 -B %h/.local/share/nas-capacity-agent/nas_capacity_agent.py
+StateDirectory=nas-capacity-agent
+StateDirectoryMode=0700
+TimeoutStartSec=90
+UMask=0077
