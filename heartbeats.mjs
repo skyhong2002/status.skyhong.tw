@@ -20,6 +20,7 @@ function formatAge(ms) {
 
 export function heartbeatStatus(entry, lastPingAt, now) {
   if (!lastPingAt) return { up: false, detail: 'No ping received yet' };
+  if (typeof lastPingAt !== 'number' || !Number.isFinite(lastPingAt) || lastPingAt > now) return { up: false, detail: 'Invalid or future ping timestamp' };
   const ageMs = now - lastPingAt;
   const deadlineMs = (entry.periodSeconds + (entry.graceSeconds || 0)) * 1000;
   if (ageMs <= deadlineMs) return { up: true, detail: `Last ping ${formatAge(ageMs)} ago` };
@@ -59,7 +60,11 @@ export async function createHeartbeats(options = {}) {
     const now = Date.now();
     return config.map((entry) => ({
       id: entry.id, name: entry.name, kind: 'Heartbeat',
-      periodSeconds: entry.periodSeconds, ...heartbeatStatus(entry, pings[entry.id], now),
+      periodSeconds: entry.periodSeconds, graceSeconds: entry.graceSeconds,
+      deadlineSeconds: entry.periodSeconds + entry.graceSeconds,
+      schedule: typeof entry.schedule === 'string' ? entry.schedule.slice(0, 100) : null,
+      successOnly: entry.successOnly === true,
+      ...heartbeatStatus(entry, pings[entry.id], now),
     }));
   }
 

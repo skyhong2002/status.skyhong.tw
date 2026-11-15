@@ -6,6 +6,7 @@ COPY server.mjs ./
 COPY alerts.mjs ./
 COPY probes.mjs ./
 COPY heartbeats.mjs ./
+COPY backup-policy.mjs ./
 COPY health.mjs ./
 COPY uptime.mjs ./
 COPY history.mjs ./

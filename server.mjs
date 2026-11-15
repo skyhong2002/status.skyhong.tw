@@ -9,6 +9,7 @@ import { checkCertificate, checkDomainExpiry, evaluateBody, resolveHost } from '
 import { createUptimeStore } from './uptime.mjs';
 import { renderMetrics, renderBadge, renderFeed, countIncidents } from './observability.mjs';
 import { buildGatewaySnapshot, migrateGatewayReports, parseGatewayHosts, probeGateway, sanitizeGatewayReport } from './gateway.mjs';
+import { responderIncidents } from './backup-policy.mjs';
 import { pruneHistory, recordHistory as appendHistory, summarizeHistory } from './history.mjs';
 import { DEFAULT_LANG, localizeIndex, preferredLanguage, renderRobots, renderSitemap, robotsTag } from './seo.mjs';
 import { containerStatus, runningProjects } from './docker.mjs';
@@ -430,7 +431,7 @@ const server = createServer(async (request, response) => {
   // Active incidents for automated responders (Hermes): the same items and thresholds that page Discord.
   if (url.pathname === '/api/incidents') return json(response, {
     checkedAt: state.checkedAt, maintenance: state.maintenance, monitored: alertItemsLatest.length,
-    active: alerter.activeIncidents(alertItemsLatest), recent: alerter.recentIncidents(20),
+    ...responderIncidents(alerter.activeIncidents(alertItemsLatest)), recent: alerter.recentIncidents(20),
     alertDelivery: state.alertDelivery, errors: state.errors,
   });
   // Raw points, split from /api/status so the dashboard payload stays small.

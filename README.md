@@ -14,7 +14,7 @@ To review the design locally without probing anything or sending alerts, run `no
 
 - `GET /api/status` — the dashboard snapshot. The 24-hour history is published as `history24h`: per monitor, a 48-character string (one 30-minute bin each; `0` no data, `1` all checks passed, `2` at least one failure) plus the 24-hour uptime percentage and check count. This keeps the payload around 70 KB.
 - `GET /api/history` — the raw `{ t, up }` points behind that summary (about 1,440 per monitor), split out because they are several megabytes.
-- `GET /api/incidents` — what is failing right now, for automated responders: every currently failing incident item (the same items and IDs that page Discord) with `failingSince`, `failCount`, `confirmed` (failed long enough to page, whether or not the webhook delivered) and `alerted`, plus the 20 most recent down/recovery events, the active maintenance window, and incident delivery status. Sky's private Hermes agent polls it every five minutes to investigate and repair confirmed incidents; see *Automated response* below.
+- `GET /api/incidents` — what is failing right now, for automated responders: `active` contains incidents eligible for the existing response path; `reportOnly` contains backup incidents requiring gated manual review. Both retain `failingSince`, `failCount`, `confirmed` (failed long enough to page, whether or not the webhook delivered) and `alerted`. The API also returns the 20 most recent down/recovery events, maintenance window and delivery status. All failures still count on the dashboard and page Discord. Sky's private Hermes agent polls `active` every five minutes; see *Automated response* below.
 
 ## Add a product
 
@@ -61,6 +61,16 @@ An item must fail `ALERT_FAILURE_THRESHOLD` consecutive checks (default 2) befor
 
 Sky's private Hermes agent (on mint-mbp, repository `skyhong2002/hermes-agent`) watches `GET /api/incidents` every five minutes. When an incident becomes `confirmed`, or the dashboard itself stops answering, it signs in to this VPS over Tailscale with a dedicated key (`hermes@mint-mbp`, restricted to Mint's tailnet address in `~ubuntu/.ssh/authorized_keys`), investigates, applies reversible fixes, and reports to Discord `#ops`. It may also improve this dashboard's coverage; such changes land here as ordinary commits and deployments, following *Deployment* below. Remove that `authorized_keys` line to revoke its access.
 
+**Backup response restriction:** sky-server backup/reliability and host-observer
+incidents are routed to `reportOnly`, outside the legacy responder's `active`
+repair queue, with `responsePolicy.automaticRemediationAllowed: false` and
+`action: report-only` in `/api/incidents`. Responders must honor this restriction:
+report through the existing gated backup workflow; never start/retry backups,
+restores, capacity repair or device/repository operations, restart maintenance
+or waiters, or manufacture a success ping. B is quarantined and excluded.
+`confirmed` means an alert is confirmed, not permission to repair. This API
+policy does not itself revoke an external responder's machine credentials.
+
 ## Heartbeats (dead-man's switch)
 
 Scheduled jobs — cron entries, n8n workflows, backups — report liveness by pinging the dashboard instead of being probed. Configure `HEARTBEATS_JSON` as an array of `{ id, name, periodSeconds, graceSeconds }` and have each job call `GET`/`POST` `/api/heartbeat/<id>` on its schedule, authenticated with `HEARTBEAT_TOKEN` (falls back to `AGENT_INGEST_TOKEN`) via `?token=` or an `Authorization: Bearer` header:
@@ -74,6 +84,15 @@ If a ping does not arrive within `periodSeconds + graceSeconds`, the heartbeat i
 The included `External status watchdog` GitHub Actions workflow probes the `/readyz` endpoint every five minutes, deduplicates failures with a GitHub Issue, and sends Discord down/recovery messages. This remains independent when the VPS or dashboard is unavailable. `EXTERNAL_HEARTBEAT_URL` remains available as an optional second dead-man service.
 
 The production heartbeat set covers the VPS reporter, Bamboo Discord watcher, n8n scheduler, and the daily status-data backup. `agent/status_data_backup.sh` uses SQLite's online backup API, archives the JSON state, retains 14 days, and records its heartbeat only after the archive completes.
+
+sky-server's `nas-backup-sky-server` is emitted by the existing root
+`/usr/local/sbin/nas-backup run` only after all jobs succeed. Its period is 7 days
+and grace is 36 hours (604800 + 129600 seconds = 204 hours). Root runs Sunday
+05:00 and USER Sunday 04:30 Asia/Taipei, each retaining 0–10 minute jitter. The
+deadline measures success-event freshness; it is not an RPO guarantee and does
+not prove USER completion, readback, DB restore, capacity or overall reliability.
+Other hosts retain their own schedules. `agent/backup_health.py` documents the
+separate, fail-closed canonical health and USER monitoring adapter.
 
 ## Metrics, badge, and feed
 
@@ -93,7 +112,28 @@ Standalone containers (outside Swarm) are down when they are not running, unheal
 
 ## Deployment
 
-The Compose stack joins `dokploy-network` and uses Dokploy's existing Traefik middleware and Let's Encrypt resolver. It runs in `/home/ubuntu/apps/sky-status-dashboard` on the host.
+Production moved to **sky-server**. The active Dokploy Compose project is
+`compose-back-up-mobile-sensor-r6ux44`, with configuration at
+`/etc/dokploy/compose/compose-back-up-mobile-sensor-r6ux44/code/docker-compose.yml`,
+private environment at the adjacent `../service.env`, and persistent bind mount
+`/srv/status-dashboard/data:/data`. Preserve its existing networks, Traefik labels,
+socket proxy and state. `/home/ubuntu/apps/sky-status-dashboard` is the old VPS
+deployment. The checked-in Compose file is a reference stack, not a replacement
+for the active Dokploy configuration.
+
+For the sky-server weekly correction, back up the private `service.env`, run
+`node scripts/configure_skyserver_backup.mjs <service.env>` with existing access,
+and recreate only `status-dashboard` in the active Compose project. The targeted
+script preserves every other heartbeat, target, credential and environment key.
+Do not use the wholesale configuration script below for this change.
+
+Build the reviewed checkout with `docker build --build-arg GIT_SHA=<commit>
+-t blog-svc-status:<commit> .`, set only the active dashboard image to that tag,
+then use the active Compose file's `up -d --no-deps status-dashboard`. Keep the
+prior image tag/config for rollback. Install the reviewed reporter and its
+`backup_health.py` into `/home/sky/Projects/status.skyhong.tw/agent/` after
+checking that checkout for unrelated edits; the existing user timer picks up
+the code on its next normal invocation. No new timer or observer is needed.
 
 Before deployment, back up `.env`, then run `node scripts/configure_production_env.mjs .env .env.example` to apply the checked-in target/heartbeat configuration and generate a dedicated heartbeat token when absent. The script replaces `STATUS_TARGETS_JSON` and `HEARTBEATS_JSON` wholesale, so only run it when `.env.example` matches production; for any other change, edit the host `.env` directly.
 
