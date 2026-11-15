@@ -128,3 +128,13 @@ def observer_detail(code, raw):
         return base
     except (ValueError, TypeError, KeyError):
         return base + ' · local health detail unknown'
+
+
+def observer_up(code, raw):
+    try:
+        data = json.loads(raw)
+        age = data['sample_age_seconds']
+        return (code == 200 and data['healthy'] is True and data['reasons'] == []
+                and type(age) in (int, float) and 0 <= age <= 150)
+    except (ValueError, TypeError, KeyError):
+        return False

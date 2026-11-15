@@ -79,3 +79,9 @@ class BackupHealthTests(unittest.TestCase):
         self.assertNotIn('private-id', detail)
         self.assertNotIn('SQL', detail)
         self.assertIn('unknown', b.observer_detail(503, 'private log'))
+        valid = dict(healthy=True, reasons=[], sample_age_seconds=1)
+        self.assertTrue(b.observer_up(200, json.dumps(valid)))
+        for raw in ['bad', '{}', json.dumps({**valid, 'sample_age_seconds': 151}),
+                    json.dumps({**valid, 'healthy': False}), json.dumps({**valid, 'reasons': ['backup_reliability']})]:
+            self.assertFalse(b.observer_up(200, raw))
+        self.assertFalse(b.observer_up(503, json.dumps(valid)))

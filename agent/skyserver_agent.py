@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from backup_health import root_item, user_backup_status, observer_detail
+from backup_health import root_item, user_backup_status, observer_detail, observer_up
 
 AGENT_ID = "sky-server"
 # Cloudflare Browser Integrity Check rejects urllib's default User-Agent (error 1010).
@@ -120,7 +120,8 @@ def http_items():
         except (OSError, urllib.error.URLError):
             code = 0
         items.append(dict(id=identifier, name=identifier, kind="HTTP endpoint",
-                          up=code in accepted, detail=observer_detail(code, raw) if identifier == 'host-observer-http'
+                          up=observer_up(code, raw) if identifier == 'host-observer-http' else code in accepted,
+                          detail=observer_detail(code, raw) if identifier == 'host-observer-http'
                           else f"HTTP {code}" if code else "Endpoint unavailable"))
     return items
 
