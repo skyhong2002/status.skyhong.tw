@@ -74,7 +74,8 @@ const STRINGS = {
     usedUp: '已用完', valid: '有效', invalid: '無效', answered: '已回應', failed: '失敗',
     // tags & rows
     tagSwarm: 'swarm', tagContainer: '容器', tagHost: '主機', tagListener: '監聽', tagAlias: '別名', tagMirror: '鏡像', tagLogin: '登入',
-    every: (n, unit) => `每 ${n} ${unit === 'h' ? '小時' : '分鐘'}`,
+    every: (n, unit) => `每 ${n} ${unit === 'd' ? '天' : unit === 'h' ? '小時' : '分鐘'}`,
+    successEventOnly: (h) => `僅成功事件時效 · 截止 ${h} 小時，非 RPO 保證；整體另見備份可靠性`,
     agentSilent: (ago) => `代理程式未回報 · 上次回報 ${ago}`,
     used: (n) => `已使用 ${n}%`, remaining: (n) => `剩餘 ${n}%`, daysRemaining: (n) => `剩餘 ${n} 天`, unknownDays: '不明',
     certificate: '憑證', validUntil: (date) => `有效至 ${date}`, checkFailed: '檢查失敗', expires: (date) => `到期日 ${date}`, expiryUnpublished: '未公開到期日',
@@ -144,7 +145,8 @@ const STRINGS = {
     mapped: 'Mapped', paused: 'Paused', missing: 'Missing', drift: 'Drift', stale: 'Stale', relogin: 'Re-login', expired: 'Expired',
     usedUp: 'Used up', valid: 'Valid', invalid: 'Invalid', answered: 'Answered', failed: 'Failed',
     tagSwarm: 'swarm', tagContainer: 'container', tagHost: 'host', tagListener: 'listener', tagAlias: 'alias', tagMirror: 'mirror', tagLogin: 'login',
-    every: (n, unit) => `every ${n} ${unit === 'h' ? 'h' : 'min'}`,
+    every: (n, unit) => `every ${n} ${unit === 'd' ? 'd' : unit === 'h' ? 'h' : 'min'}`,
+    successEventOnly: (h) => `Success event age only · ${h}h deadline, not an RPO guarantee; see backup reliability`,
     agentSilent: (ago) => `Agent has not checked in · last report ${ago}`,
     used: (n) => `${n}% used`, remaining: (n) => `${n}% remaining`, daysRemaining: (n) => `${n} days remaining`, unknownDays: 'n/a',
     certificate: 'certificate', validUntil: (date) => `until ${date}`, checkFailed: 'check failed', expires: (date) => `expires ${date}`, expiryUnpublished: 'expiry not published',
@@ -459,8 +461,10 @@ function renderJobs(data) {
     return { id, name: id === 'incident' ? t('incidentAlerts') : t('alerts', id), up: deliveryOk(status), detail };
   });
   $('jobs').hidden = jobs.length === 0 && deliveries.length === 0;
-  const period = (seconds) => (seconds >= 3600 ? t('every', Math.round(seconds / 3600), 'h') : t('every', Math.round(seconds / 60), 'min'));
-  renderList('jobs-list', jobs.map((job) => row(job.name, job.detail, job.up, job.up ? t('onTime') : t('late'), { tag: job.periodSeconds ? period(job.periodSeconds) : null })), t('noHeartbeats'));
+  const period = (seconds) => (seconds >= 86400 && seconds % 86400 === 0 ? t('every', seconds / 86400, 'd') : seconds >= 3600 ? t('every', Math.round(seconds / 3600), 'h') : t('every', Math.round(seconds / 60), 'min'));
+  renderList('jobs-list', jobs.map((job) => row(job.name,
+    [job.detail, job.schedule, job.successOnly ? t('successEventOnly', job.deadlineSeconds / 3600) : null].filter(Boolean).join(' · '),
+    job.up, job.up ? t('onTime') : t('late'), { tag: job.periodSeconds ? period(job.periodSeconds) : null })), t('noHeartbeats'));
   // An unverified webhook is a warning (as in the attention list), not an outage.
   renderList('delivery-list', deliveries.map((delivery) => row(delivery.name, delivery.detail, delivery.up || 'warn', delivery.up ? t('verified') : t('unverified'), { tag: 'Discord webhook' })), t('noDelivery'));
   setCount('jobs-total', jobs.filter((job) => job.up).length, jobs.length);

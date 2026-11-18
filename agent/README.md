@@ -232,3 +232,37 @@ Install the service/timer in `~/.config/systemd/user/`, then run
 `systemctl --user enable --now sky-status-agent.timer`.
 The status website is separately deployed by a Compose build on its VPS;
 agent-only changes require no website deploy or git push.
+
+### sky-server backup health adapter
+
+The existing reporter imports `backup_health.py`; it starts no backup or health
+job. `backup-reliability` reads `/var/lib/nas-backup/observer-reliability.json`
+and the paired `backup-cadence-latest.json`. Both timestamps must match and be
+at most two hours old, with strict schema/boolean checks. Missing, invalid,
+future, stale or unknown-policy evidence stays down. The selected policy must
+be weekly, source+A+NAS, 204h deadline with 36h completion grace. Each canonical
+readback, DB restore, history and headroom gate remains required. Legacy
+`daily_backups` means required root A+NAS jobs under that cadence; legacy
+`usb_b` means isolation-policy compliance, never B data integrity or a copy.
+Only fixed safe labels are published; no IDs, SQL, paths from receipts, errors
+or private logs are forwarded. A fixed sudo read of private cadence metadata
+reuses existing access and does not change backup permissions.
+
+USER `tag-backup` remains down while running/unfinished, failed, unknown or
+stale. Even its current verified tag-only NAS receipt cannot prove integration
+with root A+NAS/ServiceBackups: that gap is explicitly down until the producer
+integration is independently completed and this adapter is updated. Its latest
+existing manifest metadata is read locally, with a 204h completion deadline;
+no dump, DB or repository is opened. Root heartbeat success never substitutes
+for this check.
+
+The existing host-observer HTTP check reads the same response it already
+requested, including HTTP 503 bodies, and publishes allowlisted reasons such
+as `backup_reliability`. Its old per-job receipt 30h threshold is explicitly
+labelled `legacy receipt freshness (30h)`; it is not silently treated as the
+weekly canonical health deadline. This status change does not alter or restart
+the upstream observer. Observer 503 remains a failure, even with a fresh root
+success event. Backup-related incident API policies prohibit automatic repair.
+
+Production website deployment now uses the sky-server Dokploy Compose path in
+the main README; the VPS deployment reference above is historical.

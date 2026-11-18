@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from backup_health import root_item, user_backup_status, observer_detail, observer_up
 
 AGENT_ID = "sky-server"
 # Cloudflare Browser Integrity Check rejects urllib's default User-Agent (error 1010).
@@ -100,17 +101,28 @@ def http_items():
     opener = urllib.request.build_opener(NoRedirects())
     items = []
     for identifier, url, host, accepted in HTTP_CHECKS:
+        raw = b''
         request = urllib.request.Request(url, headers={"Host": host} if host else {})
         try:
             with opener.open(request, timeout=5) as response:
                 code = response.status
+                if identifier == 'host-observer-http':
+                    raw = response.read(65537)
         except urllib.error.HTTPError as error:
             code = error.code
-            error.close()
+            try:
+                if identifier == 'host-observer-http':
+                    raw = error.read(65537)
+            except OSError:
+                raw = b''
+            finally:
+                error.close()
         except (OSError, urllib.error.URLError):
             code = 0
         items.append(dict(id=identifier, name=identifier, kind="HTTP endpoint",
-                          up=code in accepted, detail=f"HTTP {code}" if code else "Endpoint unavailable"))
+                          up=observer_up(code, raw) if identifier == 'host-observer-http' else code in accepted,
+                          detail=observer_detail(code, raw) if identifier == 'host-observer-http'
+                          else f"HTTP {code}" if code else "Endpoint unavailable"))
     return items
 
 
@@ -145,6 +157,8 @@ def extra_items(docker_output, system_output, user_output, job_state):
     for identifier, name, unit in USER_TIMERS:
         up, detail = timer_job_status(unit, user, job_state.get("user:" + unit))
         service = user.get(unit + ".service", {})
+        if identifier == 'tag-backup':
+            up, detail = user_backup_status(service, up, job_state.get('user:' + unit))
         if service.get("ActiveState") in ("inactive", "failed") and service.get("Result"):
             job_state["user:" + unit] = service["Result"]
         items.append(dict(id=identifier, name=name, kind="Scheduled job", up=up, detail=detail))
@@ -328,6 +342,7 @@ def main():
     user_output = command_output(["systemctl", "--user", "show", f"--property={SYSTEMD_PROPERTIES}", *user_units, *USER_SERVICES])
     items.extend(extra_items(docker_output, systemd_output, user_output, job_state))
     items.extend(http_items())
+    items.append(root_item())
     save_job_state(job_state)
 
     body = json.dumps({"host": socket.gethostname(), "items": items}).encode("utf-8")
