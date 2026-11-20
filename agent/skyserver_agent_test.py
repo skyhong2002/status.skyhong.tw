@@ -11,6 +11,7 @@ from skyserver_agent import (
     chumei_pipeline_freshness,
     collect_items,
     container_status,
+    extra_items,
     load_job_state,
     parse_docker_states,
     parse_systemctl_show,
@@ -203,6 +204,74 @@ class CollectItemsTest(unittest.TestCase):
             self.assertEqual(load_job_state(path), {"other": "success"})
             path.write_text("[]", encoding="utf-8")
             self.assertEqual(load_job_state(path), {})
+
+
+class MissedJobCompletionTest(unittest.TestCase):
+    def sample(self, state, journal="", *, user=True, **properties):
+        unit = "myzilla-health-monitor" if user else "harmonica-social-fast"
+        output = "\n\n".join([
+            systemd_block(f"{unit}.timer", LoadState="loaded", ActiveState="active"),
+            systemd_block(f"{unit}.service", LoadState="loaded", ActiveState="activating",
+                          **({"Result": "success", "Type": "oneshot", "RemainAfterExit": "no",
+                              "ExecMainExitTimestampMonotonic": "0", "ExecMainStatus": "0",
+                              "InactiveEnterTimestampMonotonic": "200",
+                              "InactiveExitTimestampMonotonic": "300",
+                              "InvocationID": "2" * 32} | properties)),
+        ])
+        with patch("skyserver_agent.command_output", return_value=journal) as command:
+            items = extra_items("", "", output, state) if user else collect_items("", output, state)
+        return next(item for item in items if item["id"] == unit), command
+
+    def record(self, *, user=True, result="done", stamp="210", invocation="1" * 32,
+               message="Finished MyZilla health monitor."):
+        invocation_field = "USER_INVOCATION_ID" if user else "INVOCATION_ID"
+        return json.dumps({
+            invocation_field: invocation, "JOB_RESULT": result, "__MONOTONIC_TIMESTAMP": stamp,
+            "MESSAGE": message,
+        })
+
+    def test_active_samples_recover_after_missed_success(self):
+        for user, key in ((True, "user:myzilla-health-monitor"), (False, "harmonica-social-fast")):
+            with self.subTest(user=user):
+                state = {key: "exit-code"}
+                item, command = self.sample(state, self.record(user=user), user=user)
+                self.assertEqual((item["up"], item["detail"]), (True, "Running"))
+                self.assertEqual(state[key], "success")
+                args = command.call_args.args[0]
+                self.assertIn("--boot", args)
+                self.assertIn("MESSAGE_ID=39f53479d3a045ac8e11786248231fbf", args)
+                self.assertIn("MESSAGE_ID=be02cf6855d2428ba40df7e9d022f03d", args)
+                self.assertIn(f"{'USER_UNIT' if user else 'UNIT'}={key.removeprefix('user:')}.service", args)
+
+    def test_failed_retry_survives_reset_result_and_stale_or_unrelated_success(self):
+        key = "user:myzilla-health-monitor"
+        for journal in ("", "{", self.record(stamp="199"), self.record(stamp="300"),
+                        self.record(invocation="2" * 32),
+                        self.record(message="Condition check resulted in the unit being skipped.")):
+            with self.subTest(journal=journal):
+                state = {key: "exit-code"}
+                item, _ = self.sample(state, journal, ExecMainExitTimestampMonotonic="350")
+                self.assertFalse(item["up"])
+                self.assertIn("previous result exit-code", item["detail"])
+                self.assertEqual(state[key], "exit-code")
+
+    def test_failure_missed_while_idle_is_reported_during_retry(self):
+        state = {"user:myzilla-health-monitor": "success"}
+        item, _ = self.sample(state, self.record(result="failed"))
+        self.assertFalse(item["up"])
+        self.assertIn("previous result failed", item["detail"])
+
+    def test_first_run_has_no_prior_completion_to_reconcile(self):
+        state = {}
+        item, command = self.sample(state, InactiveEnterTimestampMonotonic="0")
+        self.assertEqual((item["up"], item["detail"]), (True, "Running"))
+        command.assert_not_called()
+        self.assertEqual(state, {})
+
+    def test_one_shot_with_exec_condition_is_not_inferred_successful(self):
+        state = {"user:myzilla-health-monitor": "exit-code"}
+        item, _ = self.sample(state, self.record(), ExecCondition="{ path=/usr/bin/false }")
+        self.assertFalse(item["up"])
 
 
 if __name__ == "__main__":

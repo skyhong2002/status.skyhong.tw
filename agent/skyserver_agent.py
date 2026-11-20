@@ -26,6 +26,11 @@ AGENT_ID = "sky-server"
 USER_AGENT = f"sky-status-agent/1.0 (+{socket.gethostname()})"
 JOB_STATE_PATH = Path(os.environ.get("STATE_DIRECTORY", str(Path.home() / ".local/state/sky-status-agent"))) / "systemd-jobs.json"
 COMMAND_TIMEOUT_SECONDS = 20
+JOURNAL_TIMEOUT_SECONDS = 1
+# systemd start-job completion messages, emitted for successful and failed jobs.
+UNIT_STARTED_MESSAGE_ID = "39f53479d3a045ac8e11786248231fbf"
+UNIT_FAILED_MESSAGE_ID = "be02cf6855d2428ba40df7e9d022f03d"
+RUNNING_JOB_STATES = ("activating", "active", "reloading")
 CHUMEI_PIPELINE_STATE_PATH = Path("/srv/chumei/state/pipeline.json")
 # The pipeline runs every three hours; allow an hour for a delayed/long run.
 CHUMEI_PIPELINE_MAX_AGE_SECONDS = 4 * 60 * 60
@@ -155,23 +160,26 @@ def extra_items(docker_output, system_output, user_output, job_state):
         items.append(dict(id=unit, name=unit, kind="systemd service", up=up,
                           detail=properties.get("ActiveState", "Unit missing")))
     for identifier, name, unit in USER_TIMERS:
-        up, detail = timer_job_status(unit, user, job_state.get("user:" + unit))
         service = user.get(unit + ".service", {})
+        previous_result = refresh_job_result(unit, service, job_state, user=True)
+        up, detail = timer_job_status(unit, user, previous_result)
         if identifier == 'tag-backup':
-            up, detail = user_backup_status(service, up, job_state.get('user:' + unit))
-        if service.get("ActiveState") in ("inactive", "failed") and service.get("Result"):
-            job_state["user:" + unit] = service["Result"]
+            up, detail = user_backup_status(service, up, previous_result)
         items.append(dict(id=identifier, name=name, kind="Scheduled job", up=up, detail=detail))
     return items
 
 
-SYSTEMD_PROPERTIES = "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestampMonotonic"
+SYSTEMD_PROPERTIES = (
+    "Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestampMonotonic,"
+    "Type,RemainAfterExit,ExecCondition,InvocationID,InactiveEnterTimestampMonotonic,"
+    "InactiveExitTimestampMonotonic"
+)
 
 
-def command_output(command):
+def command_output(command, timeout=COMMAND_TIMEOUT_SECONDS):
     try:
         return subprocess.run(command, text=True, capture_output=True, check=False,
-                              timeout=COMMAND_TIMEOUT_SECONDS).stdout
+                              timeout=timeout).stdout
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
@@ -218,6 +226,64 @@ def parse_systemctl_show(output):
     return units
 
 
+def journal_job_result(unit, service, user):
+    """Find the completed start job immediately before the sampled invocation."""
+    # For a transient oneshot, a successful start job finishes at deactivation.
+    # An ExecCondition skip can also finish a start job without running ExecStart.
+    if (service.get("Type") != "oneshot" or service.get("RemainAfterExit") != "no"
+            or service.get("ExecCondition")):
+        return None
+    try:
+        completed = int(service.get("InactiveEnterTimestampMonotonic", "0"))
+        started = int(service.get("InactiveExitTimestampMonotonic", "0"))
+    except ValueError:
+        return None
+    current_invocation = service.get("InvocationID")
+    if not (0 < completed < started and current_invocation and current_invocation != "0" * 32):
+        return None
+
+    unit_field, invocation_field = ("USER_UNIT", "USER_INVOCATION_ID") if user else ("UNIT", "INVOCATION_ID")
+    manager = ["_COMM=systemd", f"_UID={os.getuid()}"] if user else ["_PID=1"]
+    raw = command_output([
+        "journalctl", "--boot", "--no-pager", "--lines=1", "--output=json",
+        f"--output-fields={invocation_field},JOB_RESULT,MESSAGE",
+        *manager, f"{unit_field}={unit}.service",
+        f"MESSAGE_ID={UNIT_STARTED_MESSAGE_ID}", f"MESSAGE_ID={UNIT_FAILED_MESSAGE_ID}",
+    ], timeout=JOURNAL_TIMEOUT_SECONDS)
+    try:
+        record = json.loads(raw)
+        invocation = record[invocation_field]
+        logged = int(record["__MONOTONIC_TIMESTAMP"])
+    except (ValueError, TypeError, KeyError):
+        return None
+    # systemd emits the start-job outcome after entering the terminal state.
+    # Reject older records and records from invocations that raced the poll.
+    if (not isinstance(invocation, str) or len(invocation) != 32
+            or invocation in (current_invocation, "0" * 32) or not completed <= logged < started):
+        return None
+    if record.get("JOB_RESULT") == "failed":
+        return "failed"
+    message = record.get("MESSAGE")
+    # A skipped unit condition also logs JOB_RESULT=done with a different message.
+    if record.get("JOB_RESULT") == "done" and isinstance(message, str) and message.startswith("Finished "):
+        return "success"
+    return None
+
+
+def refresh_job_result(unit, service, job_state, *, user=False):
+    key = f"user:{unit}" if user else unit
+    active_state = service.get("ActiveState")
+    result = None
+    if active_state in ("inactive", "failed"):
+        result = service.get("Result")
+    elif active_state in RUNNING_JOB_STATES and service.get("LoadState") == "loaded":
+        # Result and ExecMain* can belong to the in-flight invocation.
+        result = journal_job_result(unit, service, user)
+    if result:
+        job_state[key] = result
+    return job_state.get(key)
+
+
 def timer_job_status(unit, units, previous_result=None):
     """A scheduled job is healthy while its timer is active and its last run succeeded.
 
@@ -230,7 +296,7 @@ def timer_job_status(unit, units, previous_result=None):
         return False, "Timer not installed"
     if timer.get("ActiveState") != "active":
         return False, f"Timer {timer.get('ActiveState') or 'unknown'}"
-    if service.get("ActiveState") in ("activating", "active", "reloading"):
+    if service.get("ActiveState") in RUNNING_JOB_STATES:
         if previous_result not in (None, "success"):
             return False, f"Retry running · previous result {previous_result}"
         return True, "Running"
@@ -314,10 +380,9 @@ def collect_items(docker_output, systemd_output, job_state):
         up, detail = container_status(container, states)
         items.append({"id": identifier, "name": name, "kind": "Docker container", "up": up, "detail": detail})
     for identifier, name, unit in TIMERS:
-        up, detail = scheduled_job_status(identifier, unit, units, previous_result=job_state.get(unit))
         service = units.get(f"{unit}.service", {})
-        if service.get("ActiveState") in ("inactive", "failed") and service.get("Result"):
-            job_state[unit] = service["Result"]
+        previous_result = refresh_job_result(unit, service, job_state)
+        up, detail = scheduled_job_status(identifier, unit, units, previous_result)
         items.append({"id": identifier, "name": name, "kind": "Scheduled job", "up": up, "detail": detail})
     return items
 
